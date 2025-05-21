@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Document Validator GUI</title>
+  <!-- Bootstrap 5 CDN -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <style>
+    body { padding-top: 2rem; }
+    .json-box { white-space: pre-wrap; background: #f8f9fa; border: 1px solid #ced4da; border-radius: .5rem; padding: 1rem; max-height: 50vh; overflow: auto; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1 class="text-center mb-4">Analisi file - Demo GUI</h1>
+
+    <!-- Specs section -->
+     
+    <!-- 3. Crea una nuova specifica -------------------------------------------->
+    <div class="card mt-4">
+      <h5 class="card-header">1. Crea una nuova specifica</h5>
+      <div class="card-body">
+        <form id="specForm" class="row g-3">
+          <!-- Nome -->
+          <div class="col-md-6">
+            <label class="form-label">Nome</label>
+            <input type="text" class="form-control" id="specName" required>
+          </div>
+
+          <!-- Dimensioni pagina -->
+          <div class="col-md-3">
+            <label class="form-label">Larghezza (cm)</label>
+            <input type="number" step="0.1" class="form-control" id="pageWidth" required>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Altezza (cm)</label>
+            <input type="number" step="0.1" class="form-control" id="pageHeight" required>
+          </div>
+
+          <!-- Margini -->
+          <div class="col-md-2">
+            <label class="form-label">Marg. Top</label>
+            <input type="number" step="0.1" class="form-control" id="marginTop" required>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Marg. Bottom</label>
+            <input type="number" step="0.1" class="form-control" id="marginBottom" required>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Marg. Left</label>
+            <input type="number" step="0.1" class="form-control" id="marginLeft" required>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Marg. Right</label>
+            <input type="number" step="0.1" class="form-control" id="marginRight" required>
+          </div>
+
+          <!-- Opzioni -->
+          <div class="col-12">
+            <div class="form-check form-check-inline">
+              <input class="form-check-input" type="checkbox" id="requiresToc">
+              <label class="form-check-label">Richiede TOC</label>
+            </div>
+            <div class="form-check form-check-inline">
+              <input class="form-check-input" type="checkbox" id="noColorPages">
+              <label class="form-check-label">No pagine a colori</label>
+            </div>
+            <div class="form-check form-check-inline">
+              <input class="form-check-input" type="checkbox" id="noImages">
+              <label class="form-check-label">No immagini</label>
+            </div>
+          </div>
+
+          <!-- Pulsante -->
+          <div class="col-12">
+            <button class="btn btn-primary" type="submit">Salva specifica</button>
+          </div>
+        </form>
+
+        <!-- Messaggio di esito -->
+        <div id="specMsg" class="mt-3"></div>
+      </div>
+    </div>
+
+    <script>
+      // Form di creazione specifica
+      document.getElementById('specForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const body = {
+          name:          document.getElementById('specName').value,
+          page_width_cm: parseFloat(document.getElementById('pageWidth').value),
+          page_height_cm:parseFloat(document.getElementById('pageHeight').value),
+          top_margin_cm: parseFloat(document.getElementById('marginTop').value),
+          bottom_margin_cm: parseFloat(document.getElementById('marginBottom').value),
+          left_margin_cm: parseFloat(document.getElementById('marginLeft').value),
+          right_margin_cm:parseFloat(document.getElementById('marginRight').value),
+          requires_toc:  document.getElementById('requiresToc').checked,
+          no_color_pages:document.getElementById('noColorPages').checked,
+          no_images:     document.getElementById('noImages').checked
+        };
+
+        try {
+          const res = await fetch('/api/specs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+
+          if (!res.ok) throw new Error(await res.text());
+
+          document.getElementById('specMsg').innerHTML =
+            '<div class="alert alert-success">Specifica salvata!</div>';
+
+          // pulisci form
+          e.target.reset();
+
+          // aggiorna il menu a tendina già esistente
+          caricaSpecifiche();   // ← funzione che hai già per "Aggiorna lista"
+        } catch (err) {
+          document.getElementById('specMsg').innerHTML =
+            `<div class="alert alert-danger">Errore: ${err}</div>`;
+        }
+      });
+    </script>
+
+    <div class="card mb-4">
+      <div class="card-header fw-bold">2. Scegli la specifica</div>
+      <div class="card-body">
+        <div class="d-flex align-items-center gap-3 mb-3">
+          <select id="specSelect" class="form-select"></select>
+          <button class="btn btn-outline-primary" id="refreshSpecs">Aggiorna lista</button>
+        </div>
+        <div class="alert alert-warning mb-0" id="noSpecs" style="display:none">Nessuna specifica trovata. Creane una via Swagger UI (<code>/api/docs</code>).</div>
+      </div>
+    </div>
+
+    <!-- Upload section -->
+    <div class="card mb-4">
+      <div class="card-header fw-bold">3. Carica il documento da controllare</div>
+      <div class="card-body">
+        <input class="form-control mb-3" type="file" id="fileInput" accept=".pdf,.docx,.odt" />
+        <button class="btn btn-success" id="validateBtn">Valida</button>
+        <div class="mt-3" id="validateSpinner" style="display:none">Validazione in corso…</div>
+      </div>
+    </div>
+
+    <!-- Result section -->
+    <div class="card mb-4" id="resultCard" style="display:none">
+      <div class="card-header fw-bold">4. Risultato</div>
+      <div class="card-body">
+        <div class="json-box mb-3" id="resultJson"></div>
+        <button class="btn btn-outline-secondary" id="downloadReportBtn">Scarica PDF report</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="/static/js/app.js"></script>
+
+</body>
+</html>
