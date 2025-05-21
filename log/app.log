@@ -57,3 +57,79 @@
 2025-05-21 09:49:10,738 [INFO] server - Environment: production
 2025-05-21 09:49:10,739 [INFO] server - Database: document_validator
 2025-05-21 09:49:29,007 [INFO] server - Database connection closed
+2025-05-21 10:10:53,870 [INFO] document_validator - Connected to MongoDB database: document_validator
+2025-05-21 10:10:59,236 [INFO] server - Document Validator API started successfully
+2025-05-21 10:10:59,237 [INFO] server - Environment: production
+2025-05-21 10:10:59,237 [INFO] server - Database: document_validator
+2025-05-21 10:23:18,562 [INFO] server - Database connection closed
+2025-05-21 10:23:21,977 [INFO] document_validator - Connected to MongoDB database: document_validator
+2025-05-21 10:23:27,870 [INFO] server - Document Validator API started successfully
+2025-05-21 10:23:27,871 [INFO] server - Environment: production
+2025-05-21 10:23:27,874 [INFO] server - Database: document_validator
+2025-05-21 10:34:52,531 [INFO] server - Database connection closed
+2025-05-21 10:36:31,015 [INFO] document_validator - Connected to MongoDB database: document_validator
+2025-05-21 10:36:36,091 [INFO] server - Document Validator API started successfully
+2025-05-21 10:36:36,092 [INFO] server - Environment: production
+2025-05-21 10:36:36,092 [INFO] server - Database: document_validator
+2025-05-21 11:41:16,552 [INFO] server - Database connection closed
+2025-05-21 11:41:22,775 [INFO] document_validator - Connected to MongoDB database: document_validator
+2025-05-21 11:41:28,632 [INFO] server - Document Validator API started successfully
+2025-05-21 11:41:28,632 [INFO] server - Environment: production
+2025-05-21 11:41:28,633 [INFO] server - Database: document_validator
+2025-05-21 11:42:48,685 [ERROR] server - Unhandled exception: 'dict' object has no attribute 'model_dump'
+Traceback (most recent call last):
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\middleware\trustedhost.py", line 36, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\middleware\gzip.py", line 29, in __call__
+    await responder(scope, receive, send)
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\middleware\gzip.py", line 126, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\middleware\gzip.py", line 46, in __call__
+    await self.app(scope, receive, self.send_with_compression)
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\middleware\cors.py", line 93, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\middleware\cors.py", line 144, in simple_response
+    await self.app(scope, receive, send)
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\routing.py", line 714, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\routing.py", line 734, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\routing.py", line 288, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\routing.py", line 76, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\starlette\routing.py", line 73, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\fastapi\routing.py", line 301, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "C:\Users\Youcanprint1\AppData\Local\Programs\Python\Python313\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Youcanprint1\Desktop\AI\analisi_file2\server.py", line 874, in validate_document_endpoint
+    **validation.model_dump(),
+      ^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'dict' object has no attribute 'model_dump'
+2025-05-21 11:45:30,832 [INFO] server - Database connection closed
+2025-05-21 11:45:35,916 [INFO] document_validator - Connected to MongoDB database: document_validator
+2025-05-21 11:45:41,427 [INFO] server - Document Validator API started successfully
+2025-05-21 11:45:41,428 [INFO] server - Environment: production
+2025-05-21 11:45:41,431 [INFO] server - Database: document_validator
+2025-05-21 11:46:53,092 [INFO] server - Validato 80287_POLI_IMPAGINATO_17X24_14122021.pdf in 11.12s
+2025-05-21 12:03:26,427 [INFO] server - Database connection closed

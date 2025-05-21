@@ -732,6 +732,18 @@ async def delete_spec(spec_id: str):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error deleting specification"
         )
+@api_router.put("/specs/{spec_id}", response_model=DocumentSpec,
+                status_code=status.HTTP_200_OK)
+async def update_spec(spec_id: str, spec: DocumentSpecCreate):
+    """Aggiorna una specifica esistente."""
+    update = await db.document_specs.update_one(
+        {"id": spec_id},
+        {"$set": spec.model_dump()}
+    )
+    if update.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Specifica non trovata")
+    spec_db = await db.document_specs.find_one({"id": spec_id})
+    return DocumentSpec(**spec_db)
 
 # Document Validation Endpoint
 @api_router.post("/validate", response_model=ValidationResult)
@@ -809,6 +821,74 @@ async def validate_document_file(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error validating document: {str(e)}"
         )
+
+@api_router.post(
+    "/validate/{spec_id}",
+    response_model=ValidationResult,
+    status_code=status.HTTP_201_CREATED
+)
+async def validate_document_endpoint(
+    spec_id: str,
+    file: UploadFile = File(...)
+):
+    """
+    Riceve un file (pdf/docx/odt) e lo valida contro la specifica indicata.
+    Ritorna un oggetto ValidationResult e lo salva nel database.
+    """
+    import time
+
+    start_time = time.time()
+
+    # -------- 1. Lettura sicura del file -----------------
+    MAX_SIZE = int(os.environ.get("MAX_FILE_SIZE", 20_971_520))  # 20 MB
+    file_size     = 0
+    file_content  = b""
+    chunk_size    = 1024 * 1024  # 1 MB
+
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        file_size += len(chunk)
+        if file_size > MAX_SIZE:
+            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                                "File troppo grande")
+        file_content += chunk
+    # -----------------------------------------------------
+
+    # -------- 2. Carica la specifica dal DB -------------
+    spec_data = await db.document_specs.find_one({"id": spec_id})
+    if not spec_data:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Specifica non trovata")
+    spec = DocumentSpec(**spec_data)
+    # -----------------------------------------------------
+
+    # -------- 3. Elabora e valida -----------------------
+    file_ext   = file.filename.rsplit(".", 1)[-1].lower()
+    doc_props  = await process_document(file_content, file_ext)
+    validation = validate_document(doc_props, spec)
+    # -----------------------------------------------------
+
+    # -------- 4. Costruisci l'oggetto risultato ---------
+    validation_data = (
+        validation.model_dump()
+        if hasattr(validation, "model_dump") else validation
+    )
+    result = ValidationResult(
+        **validation_data,
+        document_name = file.filename,
+        spec_id       = spec.id,
+        spec_name     = spec.name,
+        file_format   = file_ext,
+    )
+    # -----------------------------------------------------
+
+    # -------- 5. Salva lo storico -----------------------
+    await db.validation_results.insert_one(result.model_dump())
+    # -----------------------------------------------------
+
+    logger.info("Validato %s in %.2fs", file.filename, time.time()-start_time)
+    return result
 
 def generate_validation_report(validation_result, spec, report_format):
     """Generate a PDF report of validation results"""
