@@ -1,7 +1,7 @@
-from datetime import datetime
-from typing import Optional, List, Dict
-from pydantic import BaseModel, Field
 import uuid
+from datetime import datetime
+from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field, EmailStr
 
 class DocumentSpec(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -50,7 +50,7 @@ class DetailedDocumentAnalysis(BaseModel):
     colored_elements_count: int = 0
 
 class ValidationResult(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()))
     document_name: str
     spec_id: str
     spec_name: str
@@ -59,11 +59,31 @@ class ValidationResult(BaseModel):
     is_valid: bool
     detailed_analysis: Optional[DetailedDocumentAnalysis] = None
     user_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class User(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    username: str
+    email: EmailStr
+    full_name: Optional[str] = None
+    disabled: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class UserInDB(User):
+    hashed_password: str
+
+class UserCreate(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+    full_name: Optional[str] = None
 
 class EmailTemplate(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()))
     subject: str
     body: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_by: Optional[str] = None
 
 class EmailTemplateCreate(BaseModel):
     subject: str
@@ -73,3 +93,10 @@ class ReportFormat(BaseModel):
     include_charts: bool = True
     include_detailed_analysis: bool = True
     include_recommendations: bool = True
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    username: Optional[str] = None

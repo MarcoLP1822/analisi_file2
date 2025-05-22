@@ -1,3 +1,22 @@
+# Standard library imports
+import base64
+import io
+import json
+import logging
+import os
+import secrets
+import sys
+import tempfile
+import time
+import uuid
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, Any, Optional, Union, Set
+
+# Third-party imports
+from docx import Document as DocxDocument
+from docx.shared import Inches, Cm
+from dotenv import load_dotenv
 from fastapi import (
     FastAPI,
     APIRouter,
@@ -10,49 +29,25 @@ from fastapi import (
     status,
     Request
 )
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from dotenv import load_dotenv
-from motor.motor_asyncio import AsyncIOMotorClient
-from api import api_router
-import os
-import logging
-import io
-import json
-import tempfile
-import base64
-import time
-import sys
-import contextlib
-from pathlib import Path
-from pydantic import BaseModel, Field, EmailStr
-from typing import List, Dict, Any, Optional, Union, Set
-import uuid
-import secrets
-from datetime import datetime, timedelta
+from fastapi.responses import JSONResponse
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
-from passlib.context import CryptContext
-
-# Document processing libraries
-from docx import Document as DocxDocument
-from docx.shared import Inches, Cm
+from motor.motor_asyncio import AsyncIOMotorClient
 from odf.opendocument import load as load_odt
 from odf.style import PageLayoutProperties
 from odf.text import H as OdtHeading
-import PyPDF2
-import pdfplumber
-import fitz  # PyMuPDF
-from pdfminer.high_level import extract_text
-import matplotlib.pyplot as plt
-import numpy as np
-from reportlab.lib.pagesizes import letter, A4
-from reportlab.pdfgen import canvas
+from passlib.context import CryptContext
+from pydantic import BaseModel, Field
 from reportlab.lib import colors
-from reportlab.lib.units import inch, cm
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.pdfgen import canvas
 from reportlab.platypus import (
     SimpleDocTemplate,
     Table,
@@ -61,16 +56,60 @@ from reportlab.platypus import (
     Spacer,
     Image
 )
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
+# Local imports
+from config import Settings
+from models import (
+    TokenData,
+    FontInfo,
+    ImageInfo,
+    DetailedDocumentAnalysis,
+    DocumentSpec,
+    DocumentSpecCreate,
+    User,
+    UserInDB,
+    UserCreate,
+    ValidationResult,
+    EmailTemplate,
+    EmailTemplateCreate,
+    ReportFormat
+)
+
+# Document processing libraries
+import PyPDF2
+import pdfplumber
+import fitz  # PyMuPDF
+from pdfminer.high_level import extract_text
+
+# Inizializzazione delle impostazioni
+settings = Settings()
+
+# Configurazione logging
+logging.basicConfig(level=settings.LOG_LEVEL)
+logger = logging.getLogger("document_validator")
+
+# Configurazione DB
+client = AsyncIOMotorClient(settings.MONGO_URL)
+db = client[settings.DB_NAME]
+
+# Configurazione sicurezza
+SECRET_KEY = settings.SECRET_KEY
+ALGORITHM = settings.ALGORITHM
+ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
+ACCESS_TOKEN_EXPIRE_DELTA = settings.access_token_expires
+
+# Configurazione CORS (origini)
+origins = settings.ALLOWED_ORIGINS
+
+# Inizializzazione app FastAPI e router
+app = FastAPI()
+api_router = APIRouter(prefix="/api")
 
 # Load environment variables and configure paths
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # Configure logging based on environment
-LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
 log_level = getattr(logging, LOG_LEVEL)
 
 logging.basicConfig(
@@ -86,20 +125,6 @@ logger = logging.getLogger("document_validator")
 # Security configuration
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-SECRET_KEY = os.environ.get("TOKEN_SECRET", "default_secret_key_change_this_in_production")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("TOKEN_EXPIRE_MINUTES", 1440))  # 24 hours default
-
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-db_name = os.environ.get('DB_NAME', 'document_validator')
-try:
-    client = AsyncIOMotorClient(mongo_url)
-    db = client[db_name]
-    logger.info(f"Connected to MongoDB database: {db_name}")
-except Exception as e:
-    logger.error(f"Failed to connect to MongoDB: {e}")
-    sys.exit(1)
 
 # Create the main app without a prefix
 app = FastAPI(
@@ -113,116 +138,6 @@ app = FastAPI(
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
-
-
-# Define Models for Authentication
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-
-class TokenData(BaseModel):
-    username: Optional[str] = None
-
-
-class User(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    username: str
-    email: EmailStr
-    full_name: Optional[str] = None
-    disabled: bool = False
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-
-class UserInDB(User):
-    hashed_password: str
-
-
-class UserCreate(BaseModel):
-    username: str
-    email: EmailStr
-    password: str
-    full_name: Optional[str] = None
-
-
-# Document validation models
-class DocumentSpec(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    page_width_cm: float
-    page_height_cm: float
-    top_margin_cm: float
-    bottom_margin_cm: float
-    left_margin_cm: float
-    right_margin_cm: float
-    requires_toc: bool = False
-    no_color_pages: bool = False  # True if the document should not have color pages
-    no_images: bool = False  # True if the document should not have images
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    created_by: Optional[str] = None
-
-
-class DocumentSpecCreate(BaseModel):
-    name: str
-    page_width_cm: float
-    page_height_cm: float
-    top_margin_cm: float
-    bottom_margin_cm: float
-    left_margin_cm: float
-    right_margin_cm: float
-    requires_toc: bool = False
-    no_color_pages: bool = False
-    no_images: bool = False
-
-
-class FontInfo(BaseModel):
-    name: str
-    sizes: List[float]
-    count: int
-
-
-class ImageInfo(BaseModel):
-    count: int
-    avg_size_kb: float
-
-
-class DetailedDocumentAnalysis(BaseModel):
-    fonts: Dict[str, FontInfo] = {}
-    images: Optional[ImageInfo] = None
-    line_spacing: Dict[str, float] = {}
-    paragraph_count: int = 0
-    toc_structure: List[Dict[str, str]] = []
-    metadata: Dict[str, str] = {}
-    has_color_pages: bool = False
-    has_color_text: bool = False
-    colored_elements_count: int = 0
-
-
-class ValidationResult(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    document_name: str
-    spec_id: str
-    spec_name: str
-    file_format: str
-    validations: Dict[str, bool]
-    is_valid: bool
-    detailed_analysis: Optional[DetailedDocumentAnalysis] = None
-    user_id: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-
-class EmailTemplate(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    subject: str
-    body: str
-    user_id: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-
-class EmailTemplateCreate(BaseModel):
-    subject: str
-    body: str
-
 
 # Authentication and security functions
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -1127,19 +1042,10 @@ def generate_validation_report(
     
     return pdf_content
 
-
-# Report generation endpoint
-class ReportFormat(BaseModel):
-    include_charts: bool = True
-    include_detailed_analysis: bool = True
-    include_recommendations: bool = True
-
-
 # Include the router in the main app
 app.include_router(api_router)
 
 # CORS configuration
-origins = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
