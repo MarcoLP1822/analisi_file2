@@ -133,3 +133,8 @@ AttributeError: 'dict' object has no attribute 'model_dump'
 2025-05-21 11:45:41,431 [INFO] server - Database: document_validator
 2025-05-21 11:46:53,092 [INFO] server - Validato 80287_POLI_IMPAGINATO_17X24_14122021.pdf in 11.12s
 2025-05-21 12:03:26,427 [INFO] server - Database connection closed
+2025-05-22 09:24:42,911 [INFO] document_validator - Connected to MongoDB database: document_validator
+2025-05-22 09:24:50,926 [INFO] server - Document Validator API started successfully
+2025-05-22 09:24:50,927 [INFO] server - Environment: production
+2025-05-22 09:24:50,954 [INFO] server - Database: document_validator
+2025-05-22 09:25:12,964 [INFO] server - Database connection closed

@@ -732,6 +732,24 @@ async def delete_spec(spec_id: str):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error deleting specification"
         )
+    
+@api_router.put("/specs/{spec_id}",
+                response_model=DocumentSpec,
+                status_code=status.HTTP_200_OK)
+async def update_spec(spec_id: str, spec: DocumentSpecCreate):
+    """
+    Aggiorna una specifica esistente.
+    """
+    updated = await db.document_specs.update_one(
+        {"id": spec_id},
+        {"$set": spec.model_dump()}
+    )
+    if updated.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Specifica non trovata")
+
+    spec_db = await db.document_specs.find_one({"id": spec_id})
+    return DocumentSpec(**spec_db)
+    
 @api_router.put("/specs/{spec_id}", response_model=DocumentSpec,
                 status_code=status.HTTP_200_OK)
 async def update_spec(spec_id: str, spec: DocumentSpecCreate):
