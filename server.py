@@ -1,17 +1,13 @@
 # Standard library imports
-import base64
 import io
 import json
 import logging
 import os
-import secrets
 import sys
 import tempfile
-import time
-import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Any, Optional, Union, Set
+from typing import Dict, Any, Optional, Union
 
 # Third-party imports
 from docx import Document as DocxDocument
@@ -101,16 +97,12 @@ ACCESS_TOKEN_EXPIRE_DELTA = settings.access_token_expires
 # Configurazione CORS (origini)
 origins = settings.ALLOWED_ORIGINS
 
-# Inizializzazione app FastAPI e router
-app = FastAPI()
-api_router = APIRouter(prefix="/api")
-
 # Load environment variables and configure paths
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # Configure logging based on environment
-log_level = getattr(logging, LOG_LEVEL)
+log_level = getattr(logging, settings.LOG_LEVEL)
 
 logging.basicConfig(
     level=log_level,
@@ -286,7 +278,6 @@ def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysi
                         fonts[font_name].sizes.append(round(font_size, 1))
                 else:
                     fonts[font_name] = FontInfo(
-                        name=font_name,
                         sizes=[round(font_size, 1)],
                         count=1
                     )
@@ -414,7 +405,7 @@ def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
     
     # Create a detailed analysis for ODT
     detailed_analysis = DetailedDocumentAnalysis(
-        fonts={"Default": FontInfo(name="Default", sizes=[11.0], count=1)},
+        fonts={"Default": FontInfo(sizes=[11.0], count=1)},
         paragraph_count=len(doc.getElementsByType(OdtHeading)),
         toc_structure=[{"level": str(h.getAttribute('text:outline-level') or '1'), "text": h.firstChild.data} 
                       for h in doc.getElementsByType(OdtHeading) if h.firstChild],
@@ -614,7 +605,6 @@ def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalys
                     fonts[font_name].sizes.append(round(font_size, 1))
             else:
                 fonts[font_name] = FontInfo(
-                    name=font_name,
                     sizes=[round(font_size, 1)],
                     count=1
                 )
@@ -1070,10 +1060,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-# Include the router in the main app
-app.include_router(api_router)
-
 # Exception handler for uncaught exceptions
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
@@ -1094,11 +1080,9 @@ async def startup_db_client():
         await db.email_templates.create_index("id", unique=True)
         await db.users.create_index("username", unique=True)
         await db.users.create_index("email", unique=True)
-        
-        # Log startup information
         logger.info("Document Validator API started successfully")
         logger.info(f"Environment: {os.environ.get('ENVIRONMENT', 'development')}")
-        logger.info(f"Database: {db_name}")
+        logger.info(f"Database: {settings.DB_NAME}")
     except Exception as e:
         logger.error(f"Error during startup: {e}")
 

@@ -64,7 +64,7 @@ async def create_user(user: UserCreate):
         full_name=user.full_name
     )
     await db.users.insert_one(user_obj.model_dump())
-    return User(**user_obj.model_dump(exclude={"hashed_password"}))
+    return User(**user_obj.model_dump(exclude={'hashed_password'}))
 
 @api_router.get("/users/me", response_model=User)
 async def read_users_me(current_user: User = Depends(get_current_active_user)):
