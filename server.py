@@ -1,4 +1,16 @@
-from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, Response, Depends, status, Request
+from fastapi import (
+    FastAPI,
+    APIRouter,
+    UploadFile,
+    File,
+    Form,
+    HTTPException,
+    Response,
+    Depends,
+    status,
+    Request
+)
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,6 +18,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
+from api import api_router
 import os
 import logging
 import io
@@ -21,9 +34,8 @@ from typing import List, Dict, Any, Optional, Union, Set
 import uuid
 import secrets
 from datetime import datetime, timedelta
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
-
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 
 # Document processing libraries
 from docx import Document as DocxDocument
@@ -41,7 +53,14 @@ from reportlab.lib.pagesizes import letter, A4
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.lib.units import inch, cm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Table,
+    TableStyle,
+    Paragraph,
+    Spacer,
+    Image
+)
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
@@ -54,20 +73,22 @@ load_dotenv(ROOT_DIR / '.env')
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
 log_level = getattr(logging, LOG_LEVEL)
 
-# --- logging ---
-LOG_DIR = ROOT_DIR / "log"
-LOG_DIR.mkdir(exist_ok=True)          # crea la cartella se non c’è
-LOG_FILE = LOG_DIR / "app.log"
-
 logging.basicConfig(
     level=log_level,
     format='%(asctime)s [%(levelname)s] %(name)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(LOG_FILE, encoding="utf-8")
+        logging.FileHandler("/app/log/app.log")
     ]
 )
 logger = logging.getLogger("document_validator")
+
+# Security configuration
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+SECRET_KEY = os.environ.get("TOKEN_SECRET", "default_secret_key_change_this_in_production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("TOKEN_EXPIRE_MINUTES", 1440))  # 24 hours default
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -93,6 +114,37 @@ app = FastAPI(
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
+
+# Define Models for Authentication
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+
+class TokenData(BaseModel):
+    username: Optional[str] = None
+
+
+class User(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    username: str
+    email: EmailStr
+    full_name: Optional[str] = None
+    disabled: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class UserInDB(User):
+    hashed_password: str
+
+
+class UserCreate(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+    full_name: Optional[str] = None
+
+
 # Document validation models
 class DocumentSpec(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -109,6 +161,7 @@ class DocumentSpec(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     created_by: Optional[str] = None
 
+
 class DocumentSpecCreate(BaseModel):
     name: str
     page_width_cm: float
@@ -121,14 +174,17 @@ class DocumentSpecCreate(BaseModel):
     no_color_pages: bool = False
     no_images: bool = False
 
+
 class FontInfo(BaseModel):
     name: str
     sizes: List[float]
     count: int
 
+
 class ImageInfo(BaseModel):
     count: int
     avg_size_kb: float
+
 
 class DetailedDocumentAnalysis(BaseModel):
     fonts: Dict[str, FontInfo] = {}
@@ -140,6 +196,7 @@ class DetailedDocumentAnalysis(BaseModel):
     has_color_pages: bool = False
     has_color_text: bool = False
     colored_elements_count: int = 0
+
 
 class ValidationResult(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -153,6 +210,7 @@ class ValidationResult(BaseModel):
     user_id: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+
 class EmailTemplate(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     subject: str
@@ -160,11 +218,75 @@ class EmailTemplate(BaseModel):
     user_id: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+
 class EmailTemplateCreate(BaseModel):
     subject: str
     body: str
 
-def extract_docx_properties(file_content):
+
+# Authentication and security functions
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+async def get_user(username: str) -> Optional[UserInDB]:
+    user_dict = await db.users.find_one({"username": username})
+    if user_dict:
+        return UserInDB(**user_dict)
+    return None
+
+
+async def authenticate_user(username: str, password: str) -> Union[UserInDB, bool]:
+    user = await get_user(username)
+    if not user:
+        return False
+    if not verify_password(password, user.hashed_password):
+        return False
+    return user
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserInDB:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+        token_data = TokenData(username=username)
+    except JWTError:
+        raise credentials_exception
+    user = await get_user(username=token_data.username)
+    if user is None:
+        raise credentials_exception
+    return user
+
+
+async def get_current_active_user(current_user: User = Depends(get_current_user)) -> User:
+    if current_user.disabled:
+        raise HTTPException(status_code=400, detail="Inactive user")
+    return current_user
+
+
+def extract_docx_properties(file_content: bytes) -> Dict[str, Any]:
     """Extract properties from DOCX file"""
     doc = DocxDocument(io.BytesIO(file_content))
     
@@ -199,7 +321,8 @@ def extract_docx_properties(file_content):
         'detailed_analysis': detailed_analysis
     }
 
-def extract_docx_detailed_analysis(doc):
+
+def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysis:
     """Extract detailed analysis from DOCX document"""
     # Font analysis
     fonts = {}
@@ -297,7 +420,8 @@ def extract_docx_detailed_analysis(doc):
         colored_elements_count=colored_elements_count
     )
 
-def extract_odt_properties(file_content):
+
+def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
     """Extract properties from ODT file"""
     doc = load_odt(io.BytesIO(file_content))
     
@@ -318,7 +442,7 @@ def extract_odt_properties(file_content):
     
     # Parse dimensions
     # ODT stores values with units, like '21cm'
-    def parse_dimension(value):
+    def parse_dimension(value: str) -> float:
         if not value:
             return 0
         
@@ -399,7 +523,8 @@ def extract_odt_properties(file_content):
         'detailed_analysis': detailed_analysis
     }
 
-def extract_pdf_properties(file_content):
+
+def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
     """Extract properties from PDF file"""
     pdf_bytes_io = io.BytesIO(file_content)
     
@@ -486,7 +611,8 @@ def extract_pdf_properties(file_content):
         'detailed_analysis': detailed_analysis
     }
 
-def extract_pdf_detailed_analysis(file_content):
+
+def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalysis:
     """Extract detailed analysis from PDF file"""
     pdf_bytes_io = io.BytesIO(file_content)
     pdf_doc = fitz.open(stream=pdf_bytes_io, filetype="pdf")
@@ -609,7 +735,8 @@ def extract_pdf_detailed_analysis(file_content):
         colored_elements_count=colored_elements_count
     )
 
-async def process_document(file_content, file_format):
+
+async def process_document(file_content: bytes, file_format: str) -> Dict[str, Any]:
     """Process document based on format"""
     if file_format.lower() == 'docx':
         return extract_docx_properties(file_content)
@@ -620,8 +747,9 @@ async def process_document(file_content, file_format):
     else:
         # Unsupported format
         raise HTTPException(status_code=400, detail=f"Unsupported file format: {file_format}")
-        
-def validate_document(doc_props, spec):
+
+
+def validate_document(doc_props: Dict[str, Any], spec: DocumentSpec) -> Dict[str, Any]:
     """Validate document against specifications"""
     validations = {}
     
@@ -664,251 +792,19 @@ def validate_document(doc_props, spec):
         'is_valid': is_valid
     }
 
+
 # API Routes
 @api_router.get("/", status_code=status.HTTP_200_OK)
 async def root():
     """Root endpoint for the API"""
     return {"message": "Document Validator API", "version": "2.0.0"}
 
-# Document Specifications Endpoints
-@api_router.post("/specs", response_model=DocumentSpec, status_code=status.HTTP_201_CREATED)
-async def create_spec(spec: DocumentSpecCreate):
-    """Create a new document specification"""
-    try:
-        spec_dict = spec.model_dump()
-        spec_obj = DocumentSpec(**spec_dict)
-        await db.document_specs.insert_one(spec_obj.model_dump())
-        return spec_obj
-    except Exception as e:
-        logger.error(f"Error creating specification: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error creating specification"
-        )
 
-@api_router.get("/specs", response_model=List[DocumentSpec])
-async def get_specs():
-    """Get all document specifications"""
-    try:
-        specs = await db.document_specs.find({}).to_list(1000)
-        return [DocumentSpec(**spec) for spec in specs]
-    except Exception as e:
-        logger.error(f"Error retrieving specifications: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error retrieving specifications"
-        )
-
-@api_router.get("/specs/{spec_id}", response_model=DocumentSpec)
-async def get_spec(spec_id: str):
-    """Get a specific document specification by ID"""
-    try:
-        spec = await db.document_specs.find_one({"id": spec_id})
-        if not spec:
-            raise HTTPException(status_code=404, detail="Specification not found")
-        return DocumentSpec(**spec)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving specification {spec_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error retrieving specification"
-        )
-
-@api_router.delete("/specs/{spec_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_spec(spec_id: str):
-    """Delete a specific document specification by ID"""
-    try:
-        result = await db.document_specs.delete_one({"id": spec_id})
-        if result.deleted_count == 0:
-            raise HTTPException(status_code=404, detail="Specification not found")
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting specification {spec_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error deleting specification"
-        )
-    
-@api_router.put("/specs/{spec_id}",
-                response_model=DocumentSpec,
-                status_code=status.HTTP_200_OK)
-async def update_spec(spec_id: str, spec: DocumentSpecCreate):
-    """
-    Aggiorna una specifica esistente.
-    """
-    updated = await db.document_specs.update_one(
-        {"id": spec_id},
-        {"$set": spec.model_dump()}
-    )
-    if updated.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Specifica non trovata")
-
-    spec_db = await db.document_specs.find_one({"id": spec_id})
-    return DocumentSpec(**spec_db)
-    
-@api_router.put("/specs/{spec_id}", response_model=DocumentSpec,
-                status_code=status.HTTP_200_OK)
-async def update_spec(spec_id: str, spec: DocumentSpecCreate):
-    """Aggiorna una specifica esistente."""
-    update = await db.document_specs.update_one(
-        {"id": spec_id},
-        {"$set": spec.model_dump()}
-    )
-    if update.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Specifica non trovata")
-    spec_db = await db.document_specs.find_one({"id": spec_id})
-    return DocumentSpec(**spec_db)
-
-# Document Validation Endpoint
-@api_router.post("/validate", response_model=ValidationResult)
-async def validate_document_file(
-    file: UploadFile = File(...),
-    spec_id: str = Form(...)
-):
-    """Validate a document file against a specification"""
-    # Process start time for performance monitoring
-    start_time = time.time()
-    
-    try:
-        # Check file size
-        max_size = int(os.environ.get('MAX_FILE_SIZE', 20971520))  # Default 20MB
-        file_size = 0
-        file_content = b''
-        
-        # Read file in chunks to avoid memory issues
-        chunk_size = 1024 * 1024  # 1MB
-        while True:
-            chunk = await file.read(chunk_size)
-            if not chunk:
-                break
-            file_content += chunk
-            file_size += len(chunk)
-            
-            if file_size > max_size:
-                raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail=f"File too large. Maximum size is {max_size/1024/1024:.1f}MB"
-                )
-        
-        # Get specification
-        spec_data = await db.document_specs.find_one({"id": spec_id})
-        if not spec_data:
-            raise HTTPException(status_code=404, detail="Specification not found")
-        
-        spec = DocumentSpec(**spec_data)
-        
-        # Check file extension
-        file_extension = file.filename.split('.')[-1].lower()
-        if file_extension not in ['docx', 'odt', 'pdf']:
-            raise HTTPException(status_code=400, detail="Unsupported file format. Please upload DOCX, ODT, or PDF files.")
-        
-        # Process document
-        doc_props = await process_document(file_content, file_extension)
-        
-        # Validate document against specification
-        validation = validate_document(doc_props, spec)
-        
-        # Create validation result
-        result = ValidationResult(
-            document_name=file.filename,
-            spec_id=spec_id,
-            spec_name=spec.name,
-            file_format=file_extension,
-            validations=validation['validations'],
-            is_valid=validation['is_valid'],
-            detailed_analysis=doc_props.get('detailed_analysis')
-        )
-        
-        # Save validation result to database
-        await db.validation_results.insert_one(result.model_dump())
-        
-        # Log performance metrics
-        processing_time = time.time() - start_time
-        logger.info(f"Document validation completed in {processing_time:.2f} seconds. File: {file.filename}, Format: {file_extension}, Valid: {result.is_valid}")
-        
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error validating document: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error validating document: {str(e)}"
-        )
-
-@api_router.post(
-    "/validate/{spec_id}",
-    response_model=ValidationResult,
-    status_code=status.HTTP_201_CREATED
-)
-async def validate_document_endpoint(
-    spec_id: str,
-    file: UploadFile = File(...)
-):
-    """
-    Riceve un file (pdf/docx/odt) e lo valida contro la specifica indicata.
-    Ritorna un oggetto ValidationResult e lo salva nel database.
-    """
-    import time
-
-    start_time = time.time()
-
-    # -------- 1. Lettura sicura del file -----------------
-    MAX_SIZE = int(os.environ.get("MAX_FILE_SIZE", 20_971_520))  # 20 MB
-    file_size     = 0
-    file_content  = b""
-    chunk_size    = 1024 * 1024  # 1 MB
-
-    while True:
-        chunk = await file.read(chunk_size)
-        if not chunk:
-            break
-        file_size += len(chunk)
-        if file_size > MAX_SIZE:
-            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                                "File troppo grande")
-        file_content += chunk
-    # -----------------------------------------------------
-
-    # -------- 2. Carica la specifica dal DB -------------
-    spec_data = await db.document_specs.find_one({"id": spec_id})
-    if not spec_data:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Specifica non trovata")
-    spec = DocumentSpec(**spec_data)
-    # -----------------------------------------------------
-
-    # -------- 3. Elabora e valida -----------------------
-    file_ext   = file.filename.rsplit(".", 1)[-1].lower()
-    doc_props  = await process_document(file_content, file_ext)
-    validation = validate_document(doc_props, spec)
-    # -----------------------------------------------------
-
-    # -------- 4. Costruisci l'oggetto risultato ---------
-    validation_data = (
-        validation.model_dump()
-        if hasattr(validation, "model_dump") else validation
-    )
-    result = ValidationResult(
-        **validation_data,
-        document_name = file.filename,
-        spec_id       = spec.id,
-        spec_name     = spec.name,
-        file_format   = file_ext,
-    )
-    # -----------------------------------------------------
-
-    # -------- 5. Salva lo storico -----------------------
-    await db.validation_results.insert_one(result.model_dump())
-    # -----------------------------------------------------
-
-    logger.info("Validato %s in %.2fs", file.filename, time.time()-start_time)
-    return result
-
-def generate_validation_report(validation_result, spec, report_format):
+def generate_validation_report(
+    validation_result: ValidationResult,
+    spec: DocumentSpec,
+    report_format: ReportFormat
+) -> bytes:
     """Generate a PDF report of validation results"""
     # Create temporary file for the PDF
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_file:
@@ -1230,101 +1126,7 @@ def generate_validation_report(validation_result, spec, report_format):
         pass
     
     return pdf_content
-@api_router.post("/email-templates", response_model=EmailTemplate, status_code=status.HTTP_201_CREATED)
-async def create_email_template(
-    template: EmailTemplateCreate
-):
-    """Create a new email template"""
-    try:
-        template_dict = template.model_dump()
-        template_obj = EmailTemplate(**template_dict)
-        await db.email_templates.insert_one(template_obj.model_dump())
-        return template_obj
-    except Exception as e:
-        logger.error(f"Error creating email template: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error creating email template"
-        )
 
-@api_router.get("/email-templates", response_model=List[EmailTemplate])
-async def get_email_templates():
-    """Get all email templates"""
-    try:
-        templates = await db.email_templates.find({}).to_list(1000)
-        return [EmailTemplate(**template) for template in templates]
-    except Exception as e:
-        logger.error(f"Error retrieving email templates: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error retrieving email templates"
-        )
-
-@api_router.get("/email-templates/{template_id}", response_model=EmailTemplate)
-async def get_email_template(template_id: str):
-    """Get a specific email template by ID"""
-    try:
-        template = await db.email_templates.find_one({"id": template_id})
-        if not template:
-            raise HTTPException(status_code=404, detail="Email template not found")
-        return EmailTemplate(**template)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving email template {template_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error retrieving email template"
-        )
-
-@api_router.delete("/email-templates/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_email_template(template_id: str):
-    """Delete a specific email template by ID"""
-    try:
-        result = await db.email_templates.delete_one({"id": template_id})
-        if result.deleted_count == 0:
-            raise HTTPException(status_code=404, detail="Email template not found")
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting email template {template_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error deleting email template"
-        )
-
-# Get validation results
-@api_router.get("/validation-results", response_model=List[ValidationResult])
-async def get_validation_results():
-    """Get all validation results"""
-    try:
-        results = await db.validation_results.find().to_list(1000)
-        return [ValidationResult(**result) for result in results]
-    except Exception as e:
-        logger.error(f"Error retrieving validation results: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error retrieving validation results"
-        )
-
-# Get single validation result
-@api_router.get("/validation-results/{result_id}", response_model=ValidationResult)
-async def get_validation_result(result_id: str):
-    """Get a specific validation result by ID"""
-    try:
-        result = await db.validation_results.find_one({"id": result_id})
-        if not result:
-            raise HTTPException(status_code=404, detail="Validation result not found")
-        return ValidationResult(**result)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving validation result {result_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error retrieving validation result"
-        )
 
 # Report generation endpoint
 class ReportFormat(BaseModel):
@@ -1332,60 +1134,9 @@ class ReportFormat(BaseModel):
     include_detailed_analysis: bool = True
     include_recommendations: bool = True
 
-@api_router.post("/validation-reports/{validation_id}")
-async def generate_report(validation_id: str, report_format: ReportFormat):
-    """Generate a PDF report of validation results"""
-    try:
-        # Get validation result
-        validation_data = await db.validation_results.find_one({"id": validation_id})
-        if not validation_data:
-            raise HTTPException(status_code=404, detail="Validation result not found")
-            
-        validation_result = ValidationResult(**validation_data)
-        
-        # Get specification
-        spec_data = await db.document_specs.find_one({"id": validation_result.spec_id})
-        if not spec_data:
-            raise HTTPException(status_code=404, detail="Specification not found")
-        
-        spec = DocumentSpec(**spec_data)
-        
-        # Generate report
-        pdf_report = generate_validation_report(validation_result, spec, report_format)
-        
-        # Return the PDF
-        return Response(
-            content=pdf_report,
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f"attachment; filename=validation_report_{validation_id}.pdf"
-            }
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error generating report: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error generating report"
-        )
 
 # Include the router in the main app
 app.include_router(api_router)
-
-from fastapi.staticfiles import StaticFiles
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-from fastapi.responses import FileResponse
-from pathlib import Path
-
-@app.get("/{full_path:path}", include_in_schema=False)
-async def spa_fallback(full_path: str):
-    return FileResponse(Path("static") / "index.html")
-    
-@app.get("/", include_in_schema=False)   # niente nella docs Swagger
-async def root_page():
-    return FileResponse("static/index.html")
 
 # CORS configuration
 origins = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
@@ -1413,29 +1164,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Health check endpoint
-@api_router.get("/health")
-async def health_check():
-    """Health check endpoint for monitoring"""
-    try:
-        # Check database connection
-        await db.command("ping")
-        return {
-            "status": "healthy",
-            "database": "connected",
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={
-                "status": "unhealthy",
-                "database": "disconnected",
-                "error": str(e),
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        )
+
+# Include the router in the main app
+app.include_router(api_router)
 
 # Exception handler for uncaught exceptions
 @app.exception_handler(Exception)

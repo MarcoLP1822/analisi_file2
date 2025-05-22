@@ -138,3 +138,23 @@ AttributeError: 'dict' object has no attribute 'model_dump'
 2025-05-22 09:24:50,927 [INFO] server - Environment: production
 2025-05-22 09:24:50,954 [INFO] server - Database: document_validator
 2025-05-22 09:25:12,964 [INFO] server - Database connection closed
+2025-05-22 11:46:08,615 [INFO] document_validator - Connected to MongoDB database: document_validator
+2025-05-22 11:46:14,356 [INFO] server - Document Validator API started successfully
+2025-05-22 11:46:14,357 [INFO] server - Environment: development
+2025-05-22 11:46:14,357 [INFO] server - Database: document_validator
+2025-05-22 12:08:33,046 [INFO] server - Database connection closed
+2025-05-22 12:08:39,193 [INFO] document_validator - Connected to MongoDB database: document_validator
+2025-05-22 12:08:44,525 [INFO] server - Document Validator API started successfully
+2025-05-22 12:08:44,526 [INFO] server - Environment: development
+2025-05-22 12:08:44,527 [INFO] server - Database: document_validator
+2025-05-22 12:08:44,722 [INFO] server - Database connection closed
+2025-05-22 12:08:47,881 [INFO] document_validator - Connected to MongoDB database: document_validator
+2025-05-22 12:08:53,094 [INFO] server - Document Validator API started successfully
+2025-05-22 12:08:53,094 [INFO] server - Environment: development
+2025-05-22 12:08:53,094 [INFO] server - Database: document_validator
+2025-05-22 13:37:26,474 [INFO] server - Database connection closed
+2025-05-22 13:37:38,314 [INFO] document_validator - Connected to MongoDB database: document_validator
+2025-05-22 13:37:44,626 [INFO] server - Document Validator API started successfully
+2025-05-22 13:37:44,627 [INFO] server - Environment: development
+2025-05-22 13:37:44,628 [INFO] server - Database: document_validator
+2025-05-22 13:40:51,597 [INFO] server - Database connection closed
