@@ -32,6 +32,12 @@ logger = logging.getLogger("document_validator")
 
 api_router = APIRouter(prefix="/api")
 
+# API Routes
+@api_router.get("/", status_code=status.HTTP_200_OK)
+async def root():
+    """Root endpoint for the API"""
+    return {"message": "Document Validator API", "version": "2.0.0"}
+
 # Authentication endpoints
 @api_router.post("/token", response_model=Token)
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
@@ -185,7 +191,14 @@ async def validate_document_file(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error validating document: {e}"
         )
-
+        
+@api_router.post("/validate/{spec_id}", response_model=ValidationResult)
+async def validate_document_file_path(
+    spec_id: str,
+    file: UploadFile = File(...),
+):
+    # riutilizza la funzione già pronta
+    return await validate_document_file(file=file, spec_id=spec_id)
 
 # Email Templates Endpoints
 @api_router.post("/email-templates", response_model=EmailTemplate, status_code=status.HTTP_201_CREATED)

@@ -49,8 +49,11 @@ function getSpecFormData() {
   for (const [id, prop] of Object.entries(mapping)) {
     const el = q(id);
     if (!el) continue;
+
     if (el.type === 'checkbox') {
       data[prop] = el.checked;
+    } else if (id === 'specName') {           // ← lascialo stringa
+      data[prop] = el.value.trim();
     } else {
       const val = parseFloat(el.value);
       data[prop] = isNaN(val) ? 0 : val;
@@ -155,7 +158,15 @@ async function validaDocumento() {
 
 async function scaricaReport(id) {
   try {
-    const res = await safeFetch(`/api/validation-reports/${id}`);
+    const res = await safeFetch(`/api/validation-reports/${id}`, {
+      method: 'POST',                               // prima era GET implicito
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        include_charts: true,
+        include_detailed_analysis: true,
+        include_recommendations: true,
+      }),
+    });
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -190,3 +201,94 @@ document.addEventListener('DOMContentLoaded', async () => {
   q('specForm').addEventListener('submit', saveSpec);
   q('validateBtn').addEventListener('click', validaDocumento);
 });
+/******************** TEMPLATE E-MAIL *************************/
+function tplRow(tpl) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td>${tpl.subject}</td>
+    <td class="text-end">
+      <button data-action="edit-tpl" data-id="${tpl.id}" class="btn btn-sm btn-primary me-2">Modifica</button>
+      <button data-action="delete-tpl" data-id="${tpl.id}" class="btn btn-sm btn-danger">Elimina</button>
+    </td>`;
+  return tr;
+}
+
+async function fetchTpls() {
+  const tbody = q('tplTable');
+  tbody.textContent = '';
+  try {
+    const res = await safeFetch('/api/email-templates');
+    const tpls = await res.json();
+    q('noTpl').style.display = tpls.length ? 'none' : 'block';
+    tpls.forEach(tpl => tbody.appendChild(tplRow(tpl)));
+  } catch {
+    q('noTpl').style.display = 'block';
+  }
+}
+
+function openTplModal(mode, tpl = null) {
+  q('tplForm').reset();
+  q('tplMsg').textContent = '';
+  q('tplId').value = tpl ? tpl.id : '';
+  q('tplModalTitle').textContent = mode === 'new' ? 'Nuovo template' : 'Modifica template';
+  if (tpl) {
+    q('tplSubject').value = tpl.subject;
+    q('tplBody').value = tpl.body;
+  }
+  const modal = bootstrap.Modal.getOrCreateInstance(q('tplModal'));
+  modal.show();
+}
+
+async function saveTpl(e) {
+  e.preventDefault();
+  const id = q('tplId').value;
+  const url = id ? `/api/email-templates/${id}` : '/api/email-templates';
+  const method = id ? 'PUT' : 'POST';
+  const body = {
+    subject: q('tplSubject').value,
+    body: q('tplBody').value
+  };
+  try {
+    await safeFetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    bootstrap.Modal.getInstance(q('tplModal')).hide();
+    await fetchTpls();
+  } catch (err) {
+    q('tplMsg').textContent = err.message;
+    q('tplMsg').className = 'text-danger me-auto';
+  }
+}
+
+async function deleteTpl(id) {
+  if (!confirm('Cancellare il template?')) return;
+  try {
+    await safeFetch(`/api/email-templates/${id}`, { method: 'DELETE' });
+    await fetchTpls();
+  } catch {
+    alert('Errore nella cancellazione');
+  }
+}
+
+/* — hook nel DOMContentLoaded esistente — */
+document.addEventListener('DOMContentLoaded', async () => {
+  await fetchTpls();             // ⬅️ nuovo
+  /* pulsanti esistenti… */
+  q('newTplBtn').addEventListener('click', () => openTplModal('new'));
+  q('tplTable').addEventListener('click', async e => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const id = btn.dataset.id;
+    if (btn.dataset.action === 'edit-tpl') {
+      const res = await safeFetch(`/api/email-templates/${id}`);
+      const tpl = await res.json();
+      openTplModal('edit', tpl);
+    } else if (btn.dataset.action === 'delete-tpl') {
+      await deleteTpl(id);
+    }
+  });
+  q('tplForm').addEventListener('submit', saveTpl);
+});
+/**************************************************************/

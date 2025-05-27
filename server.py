@@ -29,8 +29,9 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 from motor.motor_asyncio import AsyncIOMotorClient
 from odf.opendocument import load as load_odt
@@ -81,7 +82,6 @@ from pdfminer.high_level import extract_text
 settings = Settings()
 
 # Configurazione logging
-logging.basicConfig(level=settings.LOG_LEVEL)
 logger = logging.getLogger("document_validator")
 
 # Configurazione DB
@@ -104,13 +104,21 @@ load_dotenv(ROOT_DIR / '.env')
 # Configure logging based on environment
 log_level = getattr(logging, settings.LOG_LEVEL)
 
+# percorso file log preso da variabile d'ambiente.
+# Vuoto o "-"  => solo console (stdout).
+LOG_PATH = os.getenv("LOG_PATH", "").strip()
+
+handlers = [logging.StreamHandler(sys.stdout)]
+
+if LOG_PATH and LOG_PATH != "-":
+    log_file = Path(LOG_PATH)
+    log_file.parent.mkdir(parents=True, exist_ok=True)  # crea la cartella se non esiste
+    handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+
 logging.basicConfig(
     level=log_level,
-    format='%(asctime)s [%(levelname)s] %(name)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("/app/log/app.log")
-    ]
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    handlers=handlers,
 )
 logger = logging.getLogger("document_validator")
 
@@ -127,9 +135,6 @@ app = FastAPI(
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json"
 )
-
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
 
 # Authentication and security functions
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -697,14 +702,6 @@ def validate_document(doc_props: Dict[str, Any], spec: DocumentSpec) -> Dict[str
         'is_valid': is_valid
     }
 
-
-# API Routes
-@api_router.get("/", status_code=status.HTTP_200_OK)
-async def root():
-    """Root endpoint for the API"""
-    return {"message": "Document Validator API", "version": "2.0.0"}
-
-
 def generate_validation_report(
     validation_result: ValidationResult,
     spec: DocumentSpec,
@@ -853,42 +850,45 @@ def generate_validation_report(
         elements.append(Spacer(1, 0.2*cm))
         
         # Create a simple text-based chart instead of using matplotlib
-        if validation_result.detailed_analysis and validation_result.detailed_analysis.fonts:
-            elements.append(Paragraph("Font Usage Distribution", styles['Heading3']))
-            elements.append(Spacer(1, 0.1*cm))
-            
-            # Get the top 5 fonts by count
+        # ───── Font Usage Distribution ─────
+        if (
+            validation_result.detailed_analysis
+            and validation_result.detailed_analysis.fonts
+        ):
+            elements.append(Paragraph("Font Usage Distribution", styles["Heading3"]))
+            elements.append(Spacer(1, 0.1 * cm))
+
+            # (nome, FontInfo) ordinati per utilizzo
             top_fonts = sorted(
-                validation_result.detailed_analysis.fonts.values(), 
-                key=lambda x: x.count, 
-                reverse=True
+                validation_result.detailed_analysis.fonts.items(),
+                key=lambda item: item[1].count,
+                reverse=True,
             )[:5]
-            
-            # Create a simple table to represent the chart
+
             font_data = [["Font Name", "Usage Count", "Distribution"]]
-            total_count = sum(font.count for font in top_fonts)
-            
-            for font in top_fonts:
-                percentage = (font.count / total_count) * 100 if total_count > 0 else 0
-                bar = "█" * int(percentage / 5)  # Simple text-based bar
-                
-                font_data.append([
-                    font.name,
-                    str(font.count),
-                    f"{bar} ({percentage:.1f}%)"
-                ])
-            
-            font_table = Table(font_data, colWidths=[6*cm, 3*cm, 7*cm])
-            font_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
-                ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 9),
-                ('GRID', (0, 0), (-1, -1), 1, colors.lightgrey)
-            ]))
+            total_count = sum(f.count for _, f in top_fonts) or 1  # evita div/0
+
+            for font_name, font_info in top_fonts:
+                percentage = (font_info.count / total_count) * 100
+                bar = "█" * int(percentage / 5)
+
+                font_data.append(
+                    [font_name, str(font_info.count), f"{bar} ({percentage:.1f}%)"]
+                )
+
+            font_table = Table(font_data, colWidths=[6 * cm, 3 * cm, 7 * cm])
+            font_table.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, -1), 9),
+                        ("GRID", (0, 0), (-1, -1), 1, colors.lightgrey),
+                    ]
+                )
+            )
             elements.append(font_table)
-            elements.append(Spacer(1, 0.3*cm))
+            elements.append(Spacer(1, 0.3 * cm))
         
         # Add a simple validation results chart
         elements.append(Paragraph("Validation Results", styles['Heading3']))
@@ -1032,8 +1032,22 @@ def generate_validation_report(
     
     return pdf_content
 
-# Include the router in the main app
-app.include_router(api_router)
+from api import api_router as api_routes
+app.include_router(api_routes)
+
+# =====  STATIC FILES & FRONTEND  =====
+BASE_DIR = Path(__file__).parent
+app.mount(
+    "/static",
+    StaticFiles(directory=BASE_DIR / "static"),
+    name="static",
+)
+
+# redirect '/' → GUI
+@app.get("/", include_in_schema=False)
+async def frontend():
+    return RedirectResponse(url="/static/index.html")
+# =====================================
 
 # CORS configuration
 app.add_middleware(
