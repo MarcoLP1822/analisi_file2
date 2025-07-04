@@ -11,6 +11,7 @@ const mapping = {
   requiresToc: 'requires_toc',
   noColorPages: 'no_color_pages',
   noImages: 'no_images',
+  minPageCount: 'min_page_count',
 };
 
 function createTableRow(spec) {

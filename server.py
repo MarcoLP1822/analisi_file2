@@ -57,6 +57,8 @@ from reportlab.platypus import (
 
 # Local imports
 from config import Settings
+from utils.conversion import convert_to_pdf_via_lo, extract_pdf_page_count
+from utils.order_parser import parse_order
 from models import (
     TokenData,
     FontInfo,
@@ -480,7 +482,8 @@ def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
     
     # Extract basic page properties with PyPDF2
     pdf_reader = PyPDF2.PdfReader(pdf_bytes_io)
-    
+    page_count = len(pdf_reader.pages)
+
     if len(pdf_reader.pages) == 0:
         raise HTTPException(status_code=400, detail="PDF file has no pages")
     
@@ -573,7 +576,8 @@ def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
         'headings': headings,
         'headers': headers,   
         'footnotes': footnotes,
-        'detailed_analysis': detailed_analysis
+        'detailed_analysis': detailed_analysis,
+        'page_count': page_count,
     }
 
 
@@ -700,29 +704,73 @@ def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalys
     )
 
 
+# ------------------------------------------------------------------ #
 async def process_document(file_content: bytes, file_format: str) -> Dict[str, Any]:
-    """Process document based on format"""
-    if file_format.lower() == 'docx':
-        return extract_docx_properties(file_content)
-    elif file_format.lower() == 'odt':
-        return extract_odt_properties(file_content)
-    elif file_format.lower() == 'pdf':
-        return extract_pdf_properties(file_content)
+    """
+    Estrae le proprietà del documento e, dove serve, calcola anche page_count
+    convertendo prima in PDF con LibreOffice.
+    Supporta doc, docx, odt e pdf.
+    """
+    fmt = file_format.lower()
+
+    # ---------- .DOC binario ----------------------------------------
+    if fmt == "doc":
+        # convertiamo direttamente a PDF e usiamo le proprietà PDF
+        pdf_bytes = convert_to_pdf_via_lo(file_content, "doc")
+        pdf_props = extract_pdf_properties(pdf_bytes)
+        return pdf_props                       # page_count già incluso
+
+    # ---------- .DOCX ----------------------------------------------
+    if fmt == "docx":
+        doc_props = extract_docx_properties(file_content)
+        # conta pagine via PDF
+        pdf_bytes = convert_to_pdf_via_lo(file_content, "docx")
+        doc_props["page_count"] = extract_pdf_page_count(pdf_bytes)
+        return doc_props
+
+    # ---------- .ODT -----------------------------------------------
+    if fmt == "odt":
+        odt_props = extract_odt_properties(file_content)
+        pdf_bytes = convert_to_pdf_via_lo(file_content, "odt")
+        odt_props["page_count"] = extract_pdf_page_count(pdf_bytes)
+        return odt_props
+
+    # ---------- .PDF ------------------------------------------------
+    if fmt == "pdf":
+        pdf_props = extract_pdf_properties(file_content)
+        # extract_pdf_properties ora inserisce page_count
+        return pdf_props
+
+    # ---------- formato non supportato -----------------------------
+    raise HTTPException(status_code=400, detail=f"Unsupported file format: {file_format}")
+# ------------------------------------------------------------------ #
+
+# ------------------------------------------------------------------ #
+def validate_document(
+    doc_props: Dict[str, Any],
+    spec: DocumentSpec,
+    services: Optional[Dict[str, bool]] = None
+) -> Dict[str, Any]:
+    """
+    Restituisce:
+    {
+        'validations': { check_name: bool, ... },
+        'is_valid': bool
+    }
+    Alcuni check possono essere disattivati in base ai servizi acquistati.
+    """
+    services = services or {}
+    validations: Dict[str, bool] = {}
+
+    # Page size 
+    if services.get("layout_service"):
+        validations["page_size"] = True      # superato di default
     else:
-        # Unsupported format
-        raise HTTPException(status_code=400, detail=f"Unsupported file format: {file_format}")
+        pw_ok = abs(doc_props['page_size']['width_cm']  - spec.page_width_cm)  < 0.5
+        ph_ok = abs(doc_props['page_size']['height_cm'] - spec.page_height_cm) < 0.5
+        validations["page_size"] = pw_ok and ph_ok
 
-
-def validate_document(doc_props: Dict[str, Any], spec: DocumentSpec) -> Dict[str, Any]:
-    """Validate document against specifications"""
-    validations = {}
-    
-    # Validate page size
-    page_width_valid = abs(doc_props['page_size']['width_cm'] - spec.page_width_cm) < 0.5
-    page_height_valid = abs(doc_props['page_size']['height_cm'] - spec.page_height_cm) < 0.5
-    validations['page_size'] = page_width_valid and page_height_valid
-    
-    # Validate margins
+    # Margini
     margins = doc_props['margins']
     top_margin_valid = abs(margins['top_cm'] - spec.top_margin_cm) < 0.5
     bottom_margin_valid = abs(margins['bottom_cm'] - spec.bottom_margin_cm) < 0.5
@@ -758,6 +806,12 @@ def validate_document(doc_props: Dict[str, Any], spec: DocumentSpec) -> Dict[str
         footnotes_valid = len(doc_props.get('footnotes', [])) > 0
     validations['has_footnotes'] = footnotes_valid
     
+    # --- pagine minime --------------------------------------------
+    if spec.min_page_count > 0:
+        validations['min_page_count'] = doc_props.get('page_count', 0) >= spec.min_page_count
+    else:
+        validations['min_page_count'] = True
+
     # Aggiorna validità complessiva
     is_valid = all(validations.values())
     

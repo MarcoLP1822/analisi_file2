@@ -322,6 +322,68 @@ async def generate_report(validation_id: str, report_format: ReportFormat):
             detail="Error generating report"
         )
 
+# ------------------------------------------------------------------ #
+# === VALIDAZIONE BASATA SU TESTO DELL'ORDINE ======================= #
+from utils.order_parser import parse_order   # in cima al file era già importato?
+
+@api_router.post("/validate-order", response_model=ValidationResult)
+async def validate_with_order(
+    request: Request,
+    order_text: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """
+    • `order_text`  → testo completo incollato dall'utente
+    • `file`        → documento da validare
+    Genera al volo una DocumentSpec derivata dall'ordine e applica
+    le regole dinamiche (salto check dimensioni se c'è impaginazione).
+    """
+    try:
+        # 1) parse ordine
+        parsed = parse_order(order_text)
+        width_cm, height_cm = parsed["final_format_cm"]
+        services = parsed["services"]
+
+        # 2) costruiamo una specifica "on‑the‑fly"
+        spec = DocumentSpec(
+            name="Specifica derivata da ordine",
+            page_width_cm=width_cm,
+            page_height_cm=height_cm,
+            top_margin_cm=0,
+            bottom_margin_cm=0,
+            left_margin_cm=0,
+            right_margin_cm=0,
+            min_page_count=40,           # vincolo fisso richiesto
+        )
+
+        # 3) processiamo il documento
+        file_bytes = await file.read()
+        doc_props = await process_document(file_bytes, file.filename.split(".")[-1])
+
+        # 4) validiamo con servizi dinamici
+        validation = validate_document(doc_props, spec, services)
+
+        # 5) salviamo (facoltativo) e rispondiamo
+        result = ValidationResult(
+            document_name=file.filename,
+            spec_id=spec.id,
+            spec_name=spec.name,
+            file_format=file.filename.split(".")[-1].lower(),
+            validations=validation["validations"],
+            is_valid=validation["is_valid"],
+            detailed_analysis=doc_props.get("detailed_analysis"),
+        )
+        # se vuoi persistere:
+        # await db.validation_results.insert_one(result.model_dump())
+
+        return result
+
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as ex:
+        logger.error(f"Errore in /validate-order: {ex}")
+        raise HTTPException(status_code=500, detail="Errore interno")
+# ------------------------------------------------------------------ #
 
 # Health check endpoint
 @api_router.get("/health")

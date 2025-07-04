@@ -19,6 +19,9 @@ class DocumentSpec(BaseModel):
     created_by: Optional[str] = None
     requires_header: bool = False  
     requires_footnotes: bool = False
+    min_page_count: int = 0
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_by: Optional[str] = None
 
 class DocumentSpecCreate(BaseModel):
     name: str
@@ -33,6 +36,7 @@ class DocumentSpecCreate(BaseModel):
     no_images: bool = False
     requires_header: bool = False        
     requires_footnotes: bool = False
+    min_page_count: int = 0
 
 class FontInfo(BaseModel):
     sizes: List[float]
