@@ -17,6 +17,8 @@ class DocumentSpec(BaseModel):
     no_images: bool = False
     created_at: datetime = Field(default_factory=datetime.utcnow)
     created_by: Optional[str] = None
+    requires_header: bool = False  
+    requires_footnotes: bool = False
 
 class DocumentSpecCreate(BaseModel):
     name: str
@@ -29,6 +31,8 @@ class DocumentSpecCreate(BaseModel):
     requires_toc: bool = False
     no_color_pages: bool = False
     no_images: bool = False
+    requires_header: bool = False        
+    requires_footnotes: bool = False
 
 class FontInfo(BaseModel):
     sizes: List[float]

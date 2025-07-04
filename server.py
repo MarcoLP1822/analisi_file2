@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional, Union
 
 # Third-party imports
 from docx import Document as DocxDocument
+from docx.oxml.ns import qn
 from docx.shared import Inches, Cm
 from dotenv import load_dotenv
 from fastapi import (
@@ -201,7 +202,32 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
 def extract_docx_properties(file_content: bytes) -> Dict[str, Any]:
     """Extract properties from DOCX file"""
     doc = DocxDocument(io.BytesIO(file_content))
+    # --- ESTRAZIONE HEADER ---
+    headers = []
+    for section in doc.sections:
+        header = section.header
+        if header:
+            text = "\n".join([p.text for p in header.paragraphs if p.text.strip()])
+            if text:
+                headers.append(text)
     
+    # --- ESTRAZIONE FOOTNOTES ---
+    footnotes_texts = []
+    footnotes_part = None
+    try:
+        footnotes_part = doc.part.footnotes_part
+    except AttributeError:
+        footnotes_part = None
+    
+    if footnotes_part:
+        for footnote in footnotes_part.footnotes:
+            texts = []
+            for p in footnote.paragraphs:
+                if p.text.strip():
+                    texts.append(p.text)
+            if texts:
+                footnotes_texts.append("\n".join(texts))
+
     section = doc.sections[0]
     # Convert from EMU (English Metric Units) to cm (1 cm = 360000 EMU)
     page_width_cm = section.page_width / 360000
@@ -230,6 +256,8 @@ def extract_docx_properties(file_content: bytes) -> Dict[str, Any]:
         'margins': margins,
         'has_toc': has_toc,
         'headings': headings,
+        'headers': headers,
+        'footnotes': footnotes_texts,
         'detailed_analysis': detailed_analysis
     }
 
@@ -335,7 +363,17 @@ def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysi
 def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
     """Extract properties from ODT file"""
     doc = load_odt(io.BytesIO(file_content))
-    
+
+    # Estraggo headers e footers (footnotes)
+    headers = []
+    footnotes = []
+    for header in doc.getElementsByType(Header):
+        if header.firstChild:
+            headers.append(header.firstChild.data)
+    for footer in doc.getElementsByType(Footer):
+        if footer.firstChild:
+            footnotes.append(footer.firstChild.data)
+
     # Get page layout properties
     page_layouts = doc.getElementsByType(PageLayoutProperties)
     
@@ -431,9 +469,10 @@ def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
         },
         'has_toc': has_toc,
         'headings': headings,
+        'headers': headers,
+        'footnotes': footnotes,
         'detailed_analysis': detailed_analysis
     }
-
 
 def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
     """Extract properties from PDF file"""
@@ -508,7 +547,20 @@ def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
     
     # Extract detailed analysis
     detailed_analysis = extract_pdf_detailed_analysis(file_content)
+
+    headers = []
+    footnotes = []
     
+    with pdfplumber.open(pdf_bytes_io) as pdf:
+        for page in pdf.pages[:3]:  # analizza prime 3 pagine per esempio
+            text = page.extract_text()
+            if not text:
+                continue
+            lines = text.split('\n')
+            if len(lines) > 2:
+                headers.append(lines[0].strip())
+                footnotes.append(lines[-1].strip())
+
     return {
         'page_size': {'width_cm': page_width_cm, 'height_cm': page_height_cm},
         'margins': {
@@ -519,6 +571,8 @@ def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
         },
         'has_toc': has_toc or len(headings) > 0,
         'headings': headings,
+        'headers': headers,   
+        'footnotes': footnotes,
         'detailed_analysis': detailed_analysis
     }
 
@@ -694,7 +748,17 @@ def validate_document(doc_props: Dict[str, Any], spec: DocumentSpec) -> Dict[str
         no_images_valid = not doc_props['detailed_analysis'].images or doc_props['detailed_analysis'].images.count == 0
     validations['no_images'] = no_images_valid
     
-    # Overall validation result
+    header_valid = True
+    if hasattr(spec, 'requires_header') and spec.requires_header:
+        header_valid = len(doc_props.get('headers', [])) > 0
+    validations['has_header'] = header_valid
+    
+    footnotes_valid = True
+    if hasattr(spec, 'requires_footnotes') and spec.requires_footnotes:
+        footnotes_valid = len(doc_props.get('footnotes', [])) > 0
+    validations['has_footnotes'] = footnotes_valid
+    
+    # Aggiorna validità complessiva
     is_valid = all(validations.values())
     
     return {
