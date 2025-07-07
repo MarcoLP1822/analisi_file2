@@ -11,25 +11,18 @@ from fastapi.responses import JSONResponse
 from datetime import datetime
 import logging
 import os
-import time
+from starlette.concurrency import run_in_threadpool
 from fastapi.encoders import jsonable_encoder
 
+# utilità locali
+from utils.order_parser import parse_order
+from utils.local_store import save_result, get_entry
+from config import settings
 from models import (
     DocumentSpec,
     ValidationResult,
     ReportFormat,
 )
-
-# funzioni di business nel server
-from server import (
-    process_document,
-    validate_document,
-    generate_validation_report,
-)
-
-# utilità locali
-from utils.order_parser import parse_order
-from utils.local_store import save_result, get_entry
 
 logger = logging.getLogger("document_validator")
 api_router = APIRouter(prefix="/api")
@@ -51,13 +44,9 @@ async def validate_with_order(
     order_text: str = Form(...),
     file: UploadFile = File(...),
 ):
-    """
-    • order_text  – testo completo incollato dall’operatore
-    • file        – documento da validare (.doc, .docx, .odt, .pdf)
-    La specifica viene costruita al volo in base al "Formato" rilevato.
-    Il controllo page‑size viene bypassato se l’ordine contiene
-    il servizio di impaginazione.
-    """
+    # ─── IMPORT LOCALE per evitare il ciclo ───
+    from server import process_document, validate_document
+
     try:
         # 1) parse ordine ------------------------------------------------
         parsed = parse_order(order_text)
@@ -78,8 +67,17 @@ async def validate_with_order(
 
         # 3) analisi documento ------------------------------------------
         file_bytes = await file.read()
+
+        # --- controllo dimensione --------------------------------------
+        if len(file_bytes) > settings.MAX_FILE_SIZE:
+            max_mb = settings.MAX_FILE_SIZE // (1024 * 1024)
+            raise HTTPException(
+                status_code=413,           # 413 Request Entity Too Large
+                detail=f"File troppo grande: massimo {max_mb} MB."
+            )
+
         ext = file.filename.split(".")[-1].lower()
-        doc_props = await process_document(file_bytes, ext)
+        doc_props = await run_in_threadpool(process_document, file_bytes, ext)
 
         # 4) validazione dinamica ---------------------------------------
         validation = validate_document(doc_props, spec, services)
@@ -93,9 +91,9 @@ async def validate_with_order(
             validations=validation["validations"],
             is_valid=validation["is_valid"],
             detailed_analysis=doc_props.get("detailed_analysis"),
-            raw_props = jsonable_encoder(doc_props),
+            raw_props=jsonable_encoder(doc_props),
         )
-        save_result(result, spec)              # in‑memory store
+        save_result(result, spec)              # in-memory store
         return result
 
     except ValueError as ve:
@@ -113,9 +111,9 @@ async def generate_report(
     validation_id: str,
     report_format: ReportFormat = ReportFormat(),
 ):
-    """
-    Restituisce il PDF di report a partire dai dati salvati in memoria.
-    """
+    # ─── IMPORT LOCALE per evitare il ciclo ───
+    from server import generate_validation_report
+
     entry = get_entry(validation_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Validation result not found")

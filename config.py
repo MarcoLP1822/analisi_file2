@@ -1,27 +1,29 @@
+# config.py
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Optional
 from datetime import timedelta
 
 class Settings(BaseSettings):
-    # Variabili configurabili (tipi e default)
-    MONGO_URL: str
+    # --- Database (opzionale nella versione Lite) -------------------
+    MONGO_URL: Optional[str] = None          # <-- ora è facoltativa
     DB_NAME: str = "document_validator"
 
-    SECRET_KEY: str
+    # --- JWT / sicurezza -------------------------------------------
+    # In produzione sovrascrivi con una variabile d’ambiente
+    SECRET_KEY: str = "INSECURE-DEV-KEY"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
 
+    # --- Altri parametri -------------------------------------------
     LOG_LEVEL: str = "INFO"
-    MAX_FILE_SIZE: int = 20 * 1024 * 1024  # 20 MB
-    ALLOWED_ORIGINS: List[str] = ["*"]  # default *
+    MAX_FILE_SIZE: int = 20 * 1024 * 1024   # 20 MB
+    ALLOWED_ORIGINS: List[str] = ["*"]      # restringi in prod
 
+    # Helper per FastAPI
     @property
     def access_token_expires(self) -> timedelta:
         return timedelta(minutes=self.ACCESS_TOKEN_EXPIRE_MINUTES)
 
     class Config:
-        env_file = ".env"           # Legge da file .env se presente
-        env_file_encoding = "utf-8" # Codifica file .env
-
-# Istanzi la configurazione globale
-settings = Settings()
+        env_file = ".env"
+        env_file_encoding = "utf-8"

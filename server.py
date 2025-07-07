@@ -438,27 +438,37 @@ def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
         # Process only first few pages for performance
         pages_to_check = min(3, len(pdf.pages))
         
-        # Try to detect margins from first page
-        first_page = pdf.pages[0]
-        
-        # Get page bounding box
-        if first_page.bbox:
-            x0, y0, x1, y1 = first_page.bbox
-            
-            # Convert to cm
-            left_margin_cm = x0 * 0.0352778
-            # PDF coordinates start from bottom, so bottom margin is y0
-            bottom_margin_cm = y0 * 0.0352778
-            # Right margin is page width minus x1 
-            right_margin_cm = (page_width_points - x1) * 0.0352778
-            # Top margin is page height minus y1
-            top_margin_cm = (page_height_points - y1) * 0.0352778
-        else:
-            # Default margins if bounding box not available
-            left_margin_cm = 2.54
-            bottom_margin_cm = 2.54
-            right_margin_cm = 2.54
-            top_margin_cm = 2.54
+        # ---------- calcolo margini pagina ----------
+        # PDF coordinate origin: (0,0) in basso-sinistra
+
+        # a) dimensioni carta (MediaBox)
+        media_w_pt = page_width_points
+        media_h_pt = page_height_points
+
+        # b) dimensioni area ritagliata (CropBox se presente, altrimenti MediaBox)
+        try:
+            # PyPDF2 restituisce CoordinateObject; cast a float
+            crop_left   = float(first_page.cropbox.lower_left[0])
+            crop_bottom = float(first_page.cropbox.lower_left[1])
+            crop_right  = float(first_page.cropbox.upper_right[0])
+            crop_top    = float(first_page.cropbox.upper_right[1])
+        except Exception:
+            # CropBox mancante → usa MediaBox (zero margini)
+            crop_left = crop_bottom = 0.0
+            crop_right  = media_w_pt
+            crop_top    = media_h_pt
+
+        # Margini in punti
+        left_margin_points   = crop_left
+        bottom_margin_points = crop_bottom
+        right_margin_points  = media_w_pt - crop_right
+        top_margin_points    = media_h_pt - crop_top
+
+        # Conversione in cm (1 pt = 0.0352778 cm)
+        left_margin_cm   = left_margin_points   * 0.0352778
+        bottom_margin_cm = bottom_margin_points * 0.0352778
+        right_margin_cm  = right_margin_points  * 0.0352778
+        top_margin_cm    = top_margin_points    * 0.0352778
             
         # Check for headings and table of contents
         for i in range(pages_to_check):
@@ -639,11 +649,10 @@ def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalys
 
 
 # ------------------------------------------------------------------ #
-async def process_document(file_content: bytes, file_format: str) -> Dict[str, Any]:
+def process_document(file_content: bytes, file_format: str) -> Dict[str, Any]:
     """
     Estrae le proprietà del documento e, dove serve, calcola anche page_count
-    convertendo prima in PDF con LibreOffice.
-    Supporta doc, docx, odt e pdf.
+    convertendo prima in PDF con LibreOffice. Supporta doc, docx, odt e pdf.
     """
     fmt = file_format.lower()
 

@@ -1,3 +1,4 @@
+# models.py  – versione ripulita (solo le due classi interessate)
 import uuid
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -6,24 +7,35 @@ from pydantic import BaseModel, Field, EmailStr
 class DocumentSpec(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
+
+    # Dimensioni pagina (cm)
     page_width_cm: float
     page_height_cm: float
+
+    # Margini (cm)
     top_margin_cm: float
     bottom_margin_cm: float
     left_margin_cm: float
     right_margin_cm: float
+
+    # Requisiti opzionali
     requires_toc: bool = False
     no_color_pages: bool = False
     no_images: bool = False
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    created_by: Optional[str] = None
-    requires_header: bool = False  
+    requires_header: bool = False
     requires_footnotes: bool = False
     min_page_count: int = 0
+
+    # Metadati
     created_at: datetime = Field(default_factory=datetime.utcnow)
     created_by: Optional[str] = None
 
+
 class DocumentSpecCreate(BaseModel):
+    """
+    Versione usata per la POST di creazione da API.
+    Stessi campi di DocumentSpec ma senza id/created_at/created_by.
+    """
     name: str
     page_width_cm: float
     page_height_cm: float
@@ -31,10 +43,11 @@ class DocumentSpecCreate(BaseModel):
     bottom_margin_cm: float
     left_margin_cm: float
     right_margin_cm: float
+
     requires_toc: bool = False
     no_color_pages: bool = False
     no_images: bool = False
-    requires_header: bool = False        
+    requires_header: bool = False
     requires_footnotes: bool = False
     min_page_count: int = 0
 
