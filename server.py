@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Union
 
 # Third-party imports
+from odf.text import H as OdtHeading
 from docx import Document as DocxDocument
 from docx.oxml.ns import qn
 from docx.shared import Inches, Cm
@@ -34,7 +35,6 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
-from motor.motor_asyncio import AsyncIOMotorClient
 from odf.opendocument import load as load_odt
 from odf.style import PageLayoutProperties
 from odf.text import H as OdtHeading
@@ -66,9 +66,6 @@ from models import (
     DetailedDocumentAnalysis,
     DocumentSpec,
     DocumentSpecCreate,
-    User,
-    UserInDB,
-    UserCreate,
     ValidationResult,
     EmailTemplate,
     EmailTemplateCreate,
@@ -86,10 +83,6 @@ settings = Settings()
 
 # Configurazione logging
 logger = logging.getLogger("document_validator")
-
-# Configurazione DB
-client = AsyncIOMotorClient(settings.MONGO_URL)
-db = client[settings.DB_NAME]
 
 # Configurazione sicurezza
 SECRET_KEY = settings.SECRET_KEY
@@ -146,59 +139,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
-
-
-async def get_user(username: str) -> Optional[UserInDB]:
-    user_dict = await db.users.find_one({"username": username})
-    if user_dict:
-        return UserInDB(**user_dict)
-    return None
-
-
-async def authenticate_user(username: str, password: str) -> Union[UserInDB, bool]:
-    user = await get_user(username)
-    if not user:
-        return False
-    if not verify_password(password, user.hashed_password):
-        return False
-    return user
-
-
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserInDB:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-        token_data = TokenData(username=username)
-    except JWTError:
-        raise credentials_exception
-    user = await get_user(username=token_data.username)
-    if user is None:
-        raise credentials_exception
-    return user
-
-
-async def get_current_active_user(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.disabled:
-        raise HTTPException(status_code=400, detail="Inactive user")
-    return current_user
 
 
 def extract_docx_properties(file_content: bytes) -> Dict[str, Any]:
@@ -369,12 +309,6 @@ def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
     # Estraggo headers e footers (footnotes)
     headers = []
     footnotes = []
-    for header in doc.getElementsByType(Header):
-        if header.firstChild:
-            headers.append(header.firstChild.data)
-    for footer in doc.getElementsByType(Footer):
-        if footer.firstChild:
-            footnotes.append(footer.firstChild.data)
 
     # Get page layout properties
     page_layouts = doc.getElementsByType(PageLayoutProperties)
@@ -771,12 +705,16 @@ def validate_document(
         validations["page_size"] = pw_ok and ph_ok
 
     # Margini
-    margins = doc_props['margins']
-    top_margin_valid = abs(margins['top_cm'] - spec.top_margin_cm) < 0.5
-    bottom_margin_valid = abs(margins['bottom_cm'] - spec.bottom_margin_cm) < 0.5
-    left_margin_valid = abs(margins['left_cm'] - spec.left_margin_cm) < 0.5
-    right_margin_valid = abs(margins['right_cm'] - spec.right_margin_cm) < 0.5
-    validations['margins'] = top_margin_valid and bottom_margin_valid and left_margin_valid and right_margin_valid
+    if services.get("layout_service"):
+        # Se c'è il servizio impaginazione saltiamo i margini
+        validations["margins"] = True
+    else:
+        margins = doc_props["margins"]
+        top_ok    = abs(margins["top_cm"]    - spec.top_margin_cm)    < 0.5
+        bottom_ok = abs(margins["bottom_cm"] - spec.bottom_margin_cm) < 0.5
+        left_ok   = abs(margins["left_cm"]   - spec.left_margin_cm)   < 0.5
+        right_ok  = abs(margins["right_cm"]  - spec.right_margin_cm)  < 0.5
+        validations["margins"] = top_ok and bottom_ok and left_ok and right_ok
     
     # Validate TOC if required
     toc_valid = True
@@ -1134,6 +1072,28 @@ def generate_validation_report(
         for rec in recommendations:
             elements.append(Paragraph(rec, styles['Normal']))
             elements.append(Spacer(1, 0.1*cm))
+    # ------------------------------------------------------------------
+    # SEZIONE RAW PROPS (dump integrale)
+    if validation_result.raw_props:
+        elements.append(Paragraph("Dettaglio completo estrazione", subtitle_style))
+        elements.append(Spacer(1, 0.2*cm))
+
+        raw_json = json.dumps(validation_result.raw_props, indent=2, ensure_ascii=False)
+        # tronca se > 20 000 caratteri (evita PDF enorme)
+        if len(raw_json) > 20000:
+            raw_json = raw_json[:20000] + "\n... (troncato)"
+
+        # usa Paragraph con font monospace
+        mono = ParagraphStyle(
+            'monospace',
+            parent=styles['Code'],
+            fontName='Courier',
+            fontSize=8,
+            leading=9,
+        )
+        for line in raw_json.split("\n"):
+            elements.append(Paragraph(line.replace(" ", "&nbsp;"), mono))
+        elements.append(Spacer(1, 0.5*cm))
     
     # Build the PDF
     doc.build(elements)
@@ -1201,28 +1161,3 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"detail": "An unexpected error occurred. Please try again later."}
     )
-
-@app.on_event("startup")
-async def startup_db_client():
-    """Startup event to initialize database"""
-    try:
-        # Ensure indexes exist
-        await db.document_specs.create_index("id", unique=True)
-        await db.validation_results.create_index("id", unique=True)
-        await db.email_templates.create_index("id", unique=True)
-        await db.users.create_index("username", unique=True)
-        await db.users.create_index("email", unique=True)
-        logger.info("Document Validator API started successfully")
-        logger.info(f"Environment: {os.environ.get('ENVIRONMENT', 'development')}")
-        logger.info(f"Database: {settings.DB_NAME}")
-    except Exception as e:
-        logger.error(f"Error during startup: {e}")
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    """Shutdown event to clean up resources"""
-    try:
-        client.close()
-        logger.info("Database connection closed")
-    except Exception as e:
-        logger.error(f"Error during shutdown: {e}")

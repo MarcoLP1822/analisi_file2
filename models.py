@@ -68,23 +68,7 @@ class ValidationResult(BaseModel):
     detailed_analysis: Optional[DetailedDocumentAnalysis] = None
     user_id: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
-
-class User(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    username: str
-    email: EmailStr
-    full_name: Optional[str] = None
-    disabled: bool = False
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-class UserInDB(User):
-    hashed_password: str
-
-class UserCreate(BaseModel):
-    username: str
-    email: EmailStr
-    password: str
-    full_name: Optional[str] = None
+    raw_props: Optional[Dict[str, Any]] = None
 
 class EmailTemplate(BaseModel):
     id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()))
