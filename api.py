@@ -75,7 +75,7 @@ async def validate_with_order(
                 status_code=413,           # 413 Request Entity Too Large
                 detail=f"File troppo grande: massimo {max_mb} MB."
             )
-
+        
         ext = file.filename.split(".")[-1].lower()
         doc_props = await run_in_threadpool(process_document, file_bytes, ext)
 

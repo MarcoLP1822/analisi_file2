@@ -1123,7 +1123,11 @@ from api import api_router as api_routes
 app.include_router(api_routes)
 
 # =====  STATIC FILES & FRONTEND  =====
-BASE_DIR = Path(__file__).parent
+import sys, pathlib
+if getattr(sys, 'frozen', False):
+    BASE_DIR = pathlib.Path(sys._MEIPASS)  # cartella temp del bundle
+else:
+    BASE_DIR = pathlib.Path(__file__).parent
 app.mount(
     "/static",
     StaticFiles(directory=BASE_DIR / "static"),
