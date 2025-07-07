@@ -54,6 +54,8 @@ class DocumentSpecCreate(BaseModel):
 class FontInfo(BaseModel):
     sizes: List[float]
     count: int
+    # mappa «dimensione pt» → occorrenze
+    size_counts: Dict[float, int] = {}
 
 class ImageInfo(BaseModel):
     count: int

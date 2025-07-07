@@ -1,42 +1,61 @@
 """
-api.py  –  versione “FastAPI Light” senza MongoDB
+api.py  –  versione “FastAPI Light” senza MongoDB
 -------------------------------------------------
-* un solo flusso:  POST /api/validate‑order
-* store in‑memory (utils.local_store) per conservare result + spec
-* generazione PDF: POST /api/validation-reports/{id}
+Flussi esposti (prefisso /api):
+
+* POST /validate-order
+    Valida un file in base al testo dell’ordine e salva l’esito in-memory.
+
+* POST /validation-reports/{validation_id}
+    Rende un PDF riassuntivo dell’esito appena validato.
+
+* POST /zendesk-ticket
+    Crea un ticket Zendesk con commento + PDF in allegato per il cliente.
+
+* GET  /health
+    Health-check basilare (nessun DB).
+
+Gli esiti di validazione vengono mantenuti in RAM tramite utils.local_store.
 """
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Response, status, Request
+from fastapi import (
+    APIRouter,
+    UploadFile,
+    File,
+    Form,
+    HTTPException,
+    Response,
+    status,
+    Request,
+)
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from datetime import datetime
 import logging
 import os
+import requests                          # per catch HTTPError Zendesk
 from starlette.concurrency import run_in_threadpool
-from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel, EmailStr
 
 # utilità locali
 from utils.order_parser import parse_order
 from utils.local_store import save_result, get_entry
 from config import settings
-from models import (
-    DocumentSpec,
-    ValidationResult,
-    ReportFormat,
-)
+from models import DocumentSpec, ValidationResult, ReportFormat
 
 logger = logging.getLogger("document_validator")
 api_router = APIRouter(prefix="/api")
 
 # ------------------------------------------------------------------ #
-# Root
+# ROOT (info versione)
 # ------------------------------------------------------------------ #
 @api_router.get("/", status_code=status.HTTP_200_OK)
 async def root():
-    return {"message": "Document Validator API — Lite", "version": "2.0.0"}
+    return {"message": "Document Validator API — Lite", "version": "2.1.0"}
 
 
 # ------------------------------------------------------------------ #
-# VALIDAZIONE BASATA SUL TESTO DELL’ORDINE
+# 1) VALIDAZIONE BASATA SUL TESTO DELL’ORDINE
 # ------------------------------------------------------------------ #
 @api_router.post("/validate-order", response_model=ValidationResult)
 async def validate_with_order(
@@ -44,16 +63,16 @@ async def validate_with_order(
     order_text: str = Form(...),
     file: UploadFile = File(...),
 ):
-    # ─── IMPORT LOCALE per evitare il ciclo ───
+    # import locali (evita import circolari)
     from server import process_document, validate_document
 
     try:
-        # 1) parse ordine ------------------------------------------------
+        # --- 1. parse testo ordine -----------------------------------
         parsed = parse_order(order_text)
         width_cm, height_cm = parsed["final_format_cm"]
         services = parsed["services"]
 
-        # 2) specifica derivata -----------------------------------------
+        # --- 2. definisci la specifica “derivata” --------------------
         spec = DocumentSpec(
             name="Specifica derivata dall’ordine",
             page_width_cm=width_cm,
@@ -62,27 +81,26 @@ async def validate_with_order(
             bottom_margin_cm=0,
             left_margin_cm=0,
             right_margin_cm=0,
-            min_page_count=40,     # fisso
+            min_page_count=40,   # soglia fissa demo
         )
 
-        # 3) analisi documento ------------------------------------------
+        # --- 3. leggi bytes e check dimensione -----------------------
         file_bytes = await file.read()
-
-        # --- controllo dimensione --------------------------------------
         if len(file_bytes) > settings.MAX_FILE_SIZE:
             max_mb = settings.MAX_FILE_SIZE // (1024 * 1024)
             raise HTTPException(
-                status_code=413,           # 413 Request Entity Too Large
-                detail=f"File troppo grande: massimo {max_mb} MB."
+                status_code=413,
+                detail=f"File troppo grande: massimo {max_mb} MB.",
             )
-        
+
+        # --- 4. estrai proprietà documento ---------------------------
         ext = file.filename.split(".")[-1].lower()
         doc_props = await run_in_threadpool(process_document, file_bytes, ext)
 
-        # 4) validazione dinamica ---------------------------------------
+        # --- 5. validazione dinamica ---------------------------------
         validation = validate_document(doc_props, spec, services)
 
-        # 5) build result + salva in memoria ----------------------------
+        # --- 6. serializza risultato e salva in memoria --------------
         result = ValidationResult(
             document_name=file.filename,
             spec_id=spec.id,
@@ -93,7 +111,7 @@ async def validate_with_order(
             detailed_analysis=doc_props.get("detailed_analysis"),
             raw_props=jsonable_encoder(doc_props),
         )
-        save_result(result, spec)              # in-memory store
+        save_result(result, spec)
         return result
 
     except ValueError as ve:
@@ -104,15 +122,14 @@ async def validate_with_order(
 
 
 # ------------------------------------------------------------------ #
-# GENERAZIONE PDF DI REPORT
+# 2) GENERAZIONE PDF DI REPORT
 # ------------------------------------------------------------------ #
 @api_router.post("/validation-reports/{validation_id}")
 async def generate_report(
     validation_id: str,
     report_format: ReportFormat = ReportFormat(),
 ):
-    # ─── IMPORT LOCALE per evitare il ciclo ───
-    from server import generate_validation_report
+    from server import generate_validation_report  # import locale
 
     entry = get_entry(validation_id)
     if not entry:
@@ -131,7 +148,54 @@ async def generate_report(
         },
     )
 
-# HEALTH CHECK (semplice, senza DB)
+
+# ------------------------------------------------------------------ #
+# 3) CREAZIONE TICKET ZENDESK CON PDF ALLEGATO
+# ------------------------------------------------------------------ #
+class ZendeskPayload(BaseModel):
+    email: EmailStr        # destinatario originale
+    message: str           # testo e-mail preparato dal front-end
+    validation_id: str     # id risultato già salvato
+
+
+@api_router.post("/zendesk-ticket")
+async def zendesk_ticket(payload: ZendeskPayload):
+    """
+    • recupera il risultato di validazione
+    • genera il PDF
+    • chiama send_ticket_to_zendesk() per upload + ticket
+    """
+    entry = get_entry(payload.validation_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Validation ID non trovato")
+
+    from server import generate_validation_report, send_ticket_to_zendesk
+
+    pdf_bytes = generate_validation_report(
+        entry["result"], entry["spec"], ReportFormat()
+    )
+
+    subject = f"Esito validazione – {entry['result'].document_name}"
+    body = f"{payload.message}\n\nCliente origine: {payload.email}"
+
+    try:
+        ticket_id = send_ticket_to_zendesk(
+            subject,
+            body,
+            pdf_bytes,
+            f"validation_{payload.validation_id}.pdf",
+            requester_email=payload.email,
+        )
+        return {"status": "ok", "ticket_id": ticket_id}
+    except requests.HTTPError as e:
+        logger.error(f"Zendesk API error: {e}")
+        raise HTTPException(
+            status_code=502, detail=f"Errore Zendesk {e.response.status_code}"
+        )
+
+
+# ------------------------------------------------------------------ #
+# 4) HEALTH CHECK
 # ------------------------------------------------------------------ #
 @api_router.get("/health")
 async def health_check():

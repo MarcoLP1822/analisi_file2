@@ -3,6 +3,7 @@ from pydantic_settings import BaseSettings
 from typing import List, Optional
 from datetime import timedelta
 
+
 class Settings(BaseSettings):
     # --- Database (opzionale nella versione Lite) -------------------
     MONGO_URL: Optional[str] = None          # <-- ora è facoltativa
@@ -19,6 +20,10 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE: int = 20 * 1024 * 1024   # 20 MB
     ALLOWED_ORIGINS: List[str] = ["*"]      # restringi in prod
 
+    ZENDESK_SUBDOMAIN: str
+    ZENDESK_EMAIL: str
+    ZENDESK_API_TOKEN: str
+
     # Helper per FastAPI
     @property
     def access_token_expires(self) -> timedelta:
@@ -29,3 +34,4 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
 
 settings = Settings()
+

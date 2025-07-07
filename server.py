@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import tempfile
+import requests, base64
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Any, Optional, Union
@@ -205,90 +206,108 @@ def extract_docx_properties(file_content: bytes) -> Dict[str, Any]:
 
 
 def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysis:
-    """Extract detailed analysis from DOCX document"""
-    # Font analysis
-    fonts = {}
+    """
+    Analisi DOCX: ora conta le occorrenze per ciascuna coppia font+size.
+    """
+    fonts: dict[str, FontInfo] = {}
     paragraph_count = 0
-    line_spacing = {}
-    toc_structure = []
+    line_spacing: dict[str, float] = {}
+    toc_structure: list[dict[str, str]] = []
     has_color_text = False
     colored_elements_count = 0
-    
+
+    # fallback: font e size di default dallo stile "Normal"
+    default_font_name = doc.styles["Normal"].font.name or "Default"
+    default_font_size = (
+        doc.styles["Normal"].font.size.pt
+        if doc.styles["Normal"].font.size
+        else 11.0
+    )
+
     for paragraph in doc.paragraphs:
         paragraph_count += 1
-        
-        # Extract line spacing
+
+        # line spacing medio per stile
         if paragraph._element.pPr is not None and paragraph._element.pPr.spacing is not None:
             if paragraph._element.pPr.spacing.line is not None:
-                # Store line spacing by style
                 style_name = paragraph.style.name
-                spacing_value = paragraph._element.pPr.spacing.line / 240  # Convert to points
-                if style_name in line_spacing:
-                    line_spacing[style_name] = (line_spacing[style_name] + spacing_value) / 2  # Average
-                else:
-                    line_spacing[style_name] = spacing_value
-        
-        # Extract TOC structure for headings
-        if paragraph.style.name.startswith('Heading'):
-            level = int(paragraph.style.name.replace('Heading', '')) if paragraph.style.name != 'Heading' else 1
-            toc_structure.append({
-                'level': str(level),
-                'text': paragraph.text
-            })
-        
-        # Extract font information and check for colored text
+                spacing_value = paragraph._element.pPr.spacing.line / 240
+                line_spacing[style_name] = (
+                    spacing_value
+                    if style_name not in line_spacing
+                    else (line_spacing[style_name] + spacing_value) / 2
+                )
+
+        # struttura TOC
+        if paragraph.style.name.startswith("Heading"):
+            lev = (
+                int(paragraph.style.name.replace("Heading", ""))
+                if paragraph.style.name != "Heading"
+                else 1
+            )
+            toc_structure.append({"level": str(lev), "text": paragraph.text})
+
+        # ---------- scan run ----------
         for run in paragraph.runs:
-            if run.font.name:
-                font_name = run.font.name
-                font_size = run.font.size / 12700 if run.font.size else 11  # Default size if not specified
-                
-                # Check for color text
-                if run.font.color and run.font.color.rgb and run.font.color.rgb != '000000':
-                    has_color_text = True
-                    colored_elements_count += 1
-                
-                if font_name in fonts:
-                    fonts[font_name].count += 1
-                    if font_size not in fonts[font_name].sizes:
-                        fonts[font_name].sizes.append(round(font_size, 1))
-                else:
-                    fonts[font_name] = FontInfo(
-                        sizes=[round(font_size, 1)],
-                        count=1
-                    )
-    
-    # Image analysis
+            # font name (run -> paragrafo -> Normal)
+            font_name = (
+                run.font.name
+                or paragraph.style.font.name
+                or default_font_name
+            )
+
+            # font size in pt
+            if run.font.size:
+                font_size = round(run.font.size.pt, 1)
+            elif paragraph.style.font.size:
+                font_size = round(paragraph.style.font.size.pt, 1)
+            else:
+                font_size = round(default_font_size, 1)
+
+            # colore?
+            if run.font.color and run.font.color.rgb and run.font.color.rgb != "000000":
+                has_color_text = True
+                colored_elements_count += 1
+
+            # aggiorna dizionario font
+            fi = fonts.get(font_name)
+            if not fi:
+                fi = FontInfo(sizes=[font_size], count=0, size_counts={})
+                fonts[font_name] = fi
+
+            fi.count += 1
+            if font_size not in fi.sizes:
+                fi.sizes.append(font_size)
+            fi.size_counts[font_size] = fi.size_counts.get(font_size, 0) + 1
+
+    # immagini
     image_count = 0
     total_image_size = 0
     has_color_pages = False
-    
     for rel in doc.part.rels.values():
-        if rel.target_ref.startswith('media/'):
+        if rel.target_ref.startswith("media/"):
             image_count += 1
-            # Estimate image size
-            if hasattr(rel.target_part, 'blob'):
+            if hasattr(rel.target_part, "blob"):
                 total_image_size += len(rel.target_part.blob)
-                # Assuming any image might have color
-                has_color_pages = True
-                colored_elements_count += 1
-    
+            has_color_pages = True
+            colored_elements_count += 1
+
     image_info = None
-    if image_count > 0:
-        avg_size_kb = (total_image_size / image_count) / 1024
-        image_info = ImageInfo(count=image_count, avg_size_kb=round(avg_size_kb, 2))
-    
-    # Document metadata
+    if image_count:
+        image_info = ImageInfo(
+            count=image_count,
+            avg_size_kb=round((total_image_size / image_count) / 1024, 2),
+        )
+
+    # metadati
     metadata = {}
-    if doc.core_properties:
-        if doc.core_properties.author:
-            metadata['author'] = doc.core_properties.author
-        if doc.core_properties.title:
-            metadata['title'] = doc.core_properties.title
-        if doc.core_properties.created:
-            metadata['created'] = doc.core_properties.created.isoformat()
-        if doc.core_properties.modified:
-            metadata['modified'] = doc.core_properties.modified.isoformat()
-    
+    cp = doc.core_properties
+    if cp:
+        if cp.author: metadata["author"] = cp.author
+        if cp.title:  metadata["title"]  = cp.title
+        if cp.created:  metadata["created"]  = cp.created.isoformat()
+        if cp.modified: metadata["modified"] = cp.modified.isoformat()
+
     return DetailedDocumentAnalysis(
         fonts=fonts,
         images=image_info,
@@ -298,7 +317,7 @@ def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysi
         metadata=metadata,
         has_color_pages=has_color_pages,
         has_color_text=has_color_text,
-        colored_elements_count=colored_elements_count
+        colored_elements_count=colored_elements_count,
     )
 
 
@@ -1118,6 +1137,59 @@ def generate_validation_report(
         pass
     
     return pdf_content
+
+def send_ticket_to_zendesk(
+    subject: str,
+    body: str,
+    pdf_bytes: bytes,
+    pdf_name: str,
+    requester_email: str,
+):
+    """
+    • carica l’allegato (uploads.json)  → upload_token
+    • crea il ticket (tickets.json)     → id ticket
+
+    Il requester viene impostato all’e-mail del cliente; l’agente API rimane assegnato
+    ma il cliente riceverà la notifica come vero mittente.
+    """
+    s = settings  # shorthand
+
+    auth = (f"{s.ZENDESK_EMAIL}/token", s.ZENDESK_API_TOKEN)
+    base = f"https://{s.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2"
+
+    # ---- 1) upload attachment ---------------------------------
+    up_res = requests.post(
+        f"{base}/uploads.json?filename={pdf_name}",
+        auth=auth,
+        files={"file": (pdf_name, pdf_bytes, "application/pdf")},
+    )
+    up_res.raise_for_status()
+    upload_token = up_res.json()["upload"]["token"]
+
+    # ---- 2) create ticket -------------------------------------
+    ticket_data = {
+        "ticket": {
+            "subject": subject,
+            # SET del requester esterno
+            "requester": {"name": requester_email.split("@")[0], "email": requester_email},
+            "comment": {
+                "body": body,
+                "uploads": [upload_token],
+                "public": True,
+            },
+            # opzionale: metti l’agente come assegnatario
+            # "assignee_email": s.ZENDESK_EMAIL,
+        }
+    }
+
+    tk_res = requests.post(
+        f"{base}/tickets.json",
+        auth=auth,
+        json=ticket_data,
+    )
+    tk_res.raise_for_status()
+    return tk_res.json()["ticket"]["id"]
+
 
 from api import api_router as api_routes
 app.include_router(api_routes)

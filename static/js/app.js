@@ -11,37 +11,133 @@ async function safeFetch(url, options = {}) {
   }
 }
 
-
 async function validaDocumento() {
   const orderText = q('orderText').value.trim();
   const fileInput = q('fileInput');
 
-  if (!orderText) { alert('Incolla il testo dell’ordine'); return; }
-  if (!fileInput.files.length) { alert('Seleziona un file'); return; }
+  if (!orderText)            { alert('Incolla il testo dell’ordine'); return; }
+  if (!fileInput.files.length){ alert('Seleziona un file'); return; }
 
-  // endpoint fisso
+  /*────────── richiesta ──────────*/
   const url = '/api/validate-order';
   const fd  = new FormData();
   fd.append('order_text', orderText);
   fd.append('file', fileInput.files[0]);
 
-  // UI: spinner on, nasconde risultato
+  /*────────── UI reset ──────────*/
   q('validateSpinner').style.display = 'block';
-  q('resultCard').style.display = 'none';
+  q('resultCard').style.display      = 'none';
+  q('fileInfoCard').style.display    = 'none';
 
   try {
     const res  = await safeFetch(url, { method: 'POST', body: fd });
     const data = await res.json();
 
-    q('resultJson').textContent = JSON.stringify(data, null, 2);
+    /*────────── estrazione proprietà ──────────*/
+    const props = data.raw_props || {};
+    const sz    = props.page_size || {};
+    const mg    = props.margins   || {};
+    const da    = props.detailed_analysis || {};
+
+    const f = n => (typeof n === 'number' ? n.toFixed(1) : '—');
+
+    /* stampa colori / B&N */
+    const stampaHTML = (da.has_color_pages || da.has_color_text)
+      ? '<span style="color:red;font-weight:bold;">COLORI</span>'
+      : '<span style="font-weight:bold;">B/N</span>';
+
+    /* pagine/elementi a colori (se disponibile) */
+    const pagineColori = (typeof da.colored_elements_count === 'number')
+                         ? da.colored_elements_count
+                         : '—';
+
+    /* intestazioni / piè di pagina */
+    const intestazioni = Array.isArray(props.headers)   ? props.headers.length   : 0;
+    const piedipagina  = Array.isArray(props.footnotes) ? props.footnotes.length : 0;
+
+    /*────────── FONT: nome + dimensioni + occorrenze ──────────*/
+    let fontLines = '  —';
+    if (da.fonts && Object.keys(da.fonts).length) {
+    
+      // 1. ordina i font per occorrenze totali (discendente)
+      const fontEntries = Object.entries(da.fonts)
+        .sort(([, a], [, b]) => b.count - a.count);
+    
+      const rows = fontEntries.map(([name, info]) => {
+        // 2. ordina le singole dimensioni per occorrenze (disc.)
+        const sizes = Object.entries(info.size_counts)
+          .sort(([, ca], [, cb]) => cb - ca)                 // maggiori prima
+          .map(([size, cnt]) => `${size} pt → ${cnt}`)
+          .join(' | ');
+        return `  - ${name}: ${sizes}`;
+      });
+    
+      fontLines = rows.join('\n');
+    }
+
+    /*────────── compila riquadro ──────────*/
+    const infoLines = [
+      'Stampa:               ' + stampaHTML,
+      'Pagine a colori:      ' + pagineColori,
+      'Nome file:            ' + (data.document_name || '—'),
+      'Formato file:         ' + ((data.file_format || '').toUpperCase() || '—'),
+      'Dimensioni pagina:    ' + f(sz.width_cm) + ' × ' + f(sz.height_cm) + ' cm',
+      'Pagine totali:        ' + (props.page_count != null ? props.page_count : '—'),
+      'Margini (cm):         T ' + f(mg.top_cm) +
+                               ' · B ' + f(mg.bottom_cm) +
+                               ' · L ' + f(mg.left_cm) +
+                               ' · R ' + f(mg.right_cm),
+      'Intestazioni:         ' + intestazioni,
+      'Piè di pagina:        ' + piedipagina,
+      'TOC presente:         ' + (props.has_toc ? 'Sì' : 'No'),
+      '',
+      'Font (nome e dimensioni):',
+      fontLines
+    ].join('\n');
+
+    q('fileInfoText').innerHTML  = infoLines;   // ← innerHTML per il markup COLORI / B/N
+    q('fileInfoCard').style.display = 'block';
+
+    /*────────── JSON risultato ──────────*/
+    q('resultJson').textContent   = JSON.stringify(data, null, 2);
     q('downloadReportBtn').onclick = () => scaricaReport(data.id);
     q('resultCard').style.display = 'block';
+    q('downloadReportBtn').dataset.valId = data.id;
+
+    /* ---------- Default e-mail ---------- */
+    const failed = Object.entries(data.validations)
+    .filter(([, ok]) => !ok)
+    .map(([check]) => '• ' + check.replaceAll('_', ' '))
+    .join('\n');
+
+    const bodyTxt = data.is_valid
+    ? `Ciao,
+
+    il documento “${data.document_name}” risulta conforme ai requisiti. In allegato trovi il report dettagliato.
+
+    Cordiali saluti`
+    : `Ciao,
+
+    durante la verifica di “${data.document_name}” abbiamo riscontrato queste incongruenze:
+
+    ${failed || '—'}
+
+    Ti chiediamo di correggerle; in allegato trovi il report dettagliato.
+
+    Grazie, resto a disposizione.`;
+
+    q('clientEmail').value = '';        // reset destinatario
+    q('emailBody').value   = bodyTxt;   // pre-compila testo
+    q('emailMsg').textContent = '';
+    q('emailCard').style.display = 'block';
+
   } catch (err) {
     alert(err.message);
   } finally {
     q('validateSpinner').style.display = 'none';
   }
 }
+
 
 async function scaricaReport(id) {
   try {
@@ -70,7 +166,34 @@ async function scaricaReport(id) {
 
 document.addEventListener('DOMContentLoaded', () => {
   q('validateBtn').addEventListener('click', validaDocumento);
+  q('sendEmailBtn').addEventListener('click', sendEmail);
 });
+
+async function sendEmail() {
+  const to    = q('clientEmail').value.trim();
+  const body  = q('emailBody').value.trim();
+  const valId = q('downloadReportBtn').dataset.valId;   // vedrai sotto
+
+  q('emailMsg').className = ''; q('emailMsg').textContent = '';
+
+  if (!to)   { q('emailMsg').textContent = 'E-mail mancante';  q('emailMsg').className='text-danger'; return; }
+  if (!body) { q('emailMsg').textContent = 'Messaggio vuoto'; q('emailMsg').className='text-danger'; return; }
+
+  try {
+    const res = await safeFetch('/api/zendesk-ticket', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ email: to, message: body, validation_id: valId })
+    });
+    const data = await res.json();
+    q('emailMsg').textContent = `Ticket #${data.ticket_id} creato`;
+    q('emailMsg').className = 'text-success';
+  } catch (err) {
+    q('emailMsg').textContent = err.message;
+    q('emailMsg').className = 'text-danger';
+  }
+}
+
 
 /******************** TEMPLATE E-MAIL *************************/
 /*function tplRow(tpl) {
