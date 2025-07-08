@@ -1,4 +1,4 @@
-# Standard library imports
+# Importazioni librerie standard
 import io
 import json
 import logging
@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Any, Optional, Union
 
-# Third-party imports
+# Importazioni librerie di terze parti
 from odf.text import H as OdtHeading
 from docx import Document as DocxDocument
 from docx.oxml.ns import qn
@@ -56,7 +56,7 @@ from reportlab.platypus import (
     Image
 )
 
-# Local imports
+# Importazioni locali
 from config import Settings
 from utils.conversion import convert_to_pdf_via_lo, extract_pdf_page_count
 from utils.order_parser import parse_order
@@ -73,7 +73,7 @@ from models import (
     ReportFormat
 )
 
-# Document processing libraries
+# Librerie per elaborazione documenti
 import PyPDF2
 import pdfplumber
 import fitz  # PyMuPDF
@@ -94,11 +94,11 @@ ACCESS_TOKEN_EXPIRE_DELTA = settings.access_token_expires
 # Configurazione CORS (origini)
 origins = settings.ALLOWED_ORIGINS
 
-# Load environment variables and configure paths
+# Carica variabili d'ambiente e configura percorsi
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# Configure logging based on environment
+# Configura logging basato sull'ambiente
 log_level = getattr(logging, settings.LOG_LEVEL)
 
 # percorso file log preso da variabile d'ambiente.
@@ -119,11 +119,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("document_validator")
 
-# Security configuration
+# Configurazione di sicurezza
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# Create the main app without a prefix
+# Crea l'app principale senza prefisso
 app = FastAPI(
     title="Document Validator API",
     description="API for validating and analyzing documents against specifications",
@@ -133,7 +133,7 @@ app = FastAPI(
     openapi_url="/api/openapi.json"
 )
 
-# Authentication and security functions
+# Funzioni di autenticazione e sicurezza
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
@@ -143,7 +143,7 @@ def get_password_hash(password: str) -> str:
 
 
 def extract_docx_properties(file_content: bytes) -> Dict[str, Any]:
-    """Extract properties from DOCX file"""
+    """Estrae proprietà da file DOCX"""
     doc = DocxDocument(io.BytesIO(file_content))
     # --- ESTRAZIONE HEADER ---
     headers = []
@@ -172,7 +172,7 @@ def extract_docx_properties(file_content: bytes) -> Dict[str, Any]:
                 footnotes_texts.append("\n".join(texts))
 
     section = doc.sections[0]
-    # Convert from EMU (English Metric Units) to cm (1 cm = 360000 EMU)
+    # Converte da EMU (English Metric Units) a cm (1 cm = 360000 EMU)
     page_width_cm = section.page_width / 360000
     page_height_cm = section.page_height / 360000
     
@@ -183,7 +183,7 @@ def extract_docx_properties(file_content: bytes) -> Dict[str, Any]:
         'right_cm': section.right_margin / 360000
     }
     
-    # Check for headings (potential TOC)
+    # Controlla intestazioni (potenziale indice)
     headings = []
     for paragraph in doc.paragraphs:
         if paragraph.style.name.startswith('Heading'):
@@ -191,7 +191,7 @@ def extract_docx_properties(file_content: bytes) -> Dict[str, Any]:
     
     has_toc = len(headings) > 0
     
-    # Extract detailed analysis
+    # Estrae analisi dettagliata
     detailed_analysis = extract_docx_detailed_analysis(doc)
     
     return {
@@ -216,7 +216,7 @@ def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysi
     has_color_text = False
     colored_elements_count = 0
 
-    # fallback: font e size di default dallo stile "Normal"
+    # fallback: font e dimensione di default dallo stile "Normal"
     default_font_name = doc.styles["Normal"].font.name or "Default"
     default_font_size = (
         doc.styles["Normal"].font.size.pt
@@ -227,7 +227,7 @@ def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysi
     for paragraph in doc.paragraphs:
         paragraph_count += 1
 
-        # line spacing medio per stile
+        # interlinea media per stile
         if paragraph._element.pPr is not None and paragraph._element.pPr.spacing is not None:
             if paragraph._element.pPr.spacing.line is not None:
                 style_name = paragraph.style.name
@@ -249,14 +249,14 @@ def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysi
 
         # ---------- scan run ----------
         for run in paragraph.runs:
-            # font name (run -> paragrafo -> Normal)
+            # nome font (run -> paragrafo -> Normal)
             font_name = (
                 run.font.name
                 or paragraph.style.font.name
                 or default_font_name
             )
 
-            # font size in pt
+            # dimensione font in pt
             if run.font.size:
                 font_size = round(run.font.size.pt, 1)
             elif paragraph.style.font.size:
@@ -269,7 +269,7 @@ def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysi
                 has_color_text = True
                 colored_elements_count += 1
 
-            # aggiorna dizionario font
+            # aggiorna dizionario caratteri
             fi = fonts.get(font_name)
             if not fi:
                 fi = FontInfo(sizes=[font_size], count=0, size_counts={})
@@ -329,7 +329,7 @@ def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
     headers = []
     footnotes = []
 
-    # Get page layout properties
+    # Ottiene le proprietà del layout di pagina
     page_layouts = doc.getElementsByType(PageLayoutProperties)
     
     if not page_layouts:
@@ -341,22 +341,22 @@ def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
             'detailed_analysis': DetailedDocumentAnalysis()
         }
     
-    # Get first page layout
+    # Ottiene il layout della prima pagina
     page_layout = page_layouts[0]
     
-    # Parse dimensions
-    # ODT stores values with units, like '21cm'
+    # Analizza le dimensioni
+    # ODT memorizza i valori con unità, come '21cm'
     def parse_dimension(value: str) -> float:
         if not value:
             return 0
         
-        # Remove units and convert to float
+        # Rimuove unità e converte a float
         if 'cm' in value:
             return float(value.replace('cm', ''))
         elif 'mm' in value:
-            return float(value.replace('mm', '')) / 10  # Convert mm to cm
+            return float(value.replace('mm', '')) / 10  # Converte mm in cm
         elif 'in' in value:
-            return float(value.replace('in', '')) * 2.54  # Convert inches to cm
+            return float(value.replace('in', '')) * 2.54  # Converte pollici in cm
         
         return float(value)
     
@@ -368,7 +368,7 @@ def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
     margin_left = parse_dimension(page_layout.getAttribute('fo:margin-left'))
     margin_right = parse_dimension(page_layout.getAttribute('fo:margin-right'))
     
-    # Extract headings
+    # Estrae intestazioni
     headings = []
     for heading in doc.getElementsByType(OdtHeading):
         if heading.firstChild:
@@ -376,16 +376,16 @@ def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
     
     has_toc = len(headings) > 0
     
-    # Check for images and color elements
+    # Controlla immagini ed elementi colorati
     from odf.draw import Image as OdtImage
     from odf.style import TextProperties, GraphicProperties
     
     image_count = len(doc.getElementsByType(OdtImage))
-    has_color_pages = image_count > 0  # Assume images have color
+    has_color_pages = image_count > 0  # Assume che le immagini abbiano colori
     has_color_text = False
     colored_elements_count = image_count
     
-    # Check for colored text
+    # Controlla testo colorato
     text_props = doc.getElementsByType(TextProperties)
     for prop in text_props:
         color = prop.getAttribute('fo:color')
@@ -393,7 +393,7 @@ def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
             has_color_text = True
             colored_elements_count += 1
     
-    # Check for colored graphics
+    # Controlla grafica colorata
     graphic_props = doc.getElementsByType(GraphicProperties)
     for prop in graphic_props:
         fill_color = prop.getAttribute('draw:fill-color')
@@ -401,7 +401,7 @@ def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
             has_color_pages = True
             colored_elements_count += 1
     
-    # Create a detailed analysis for ODT
+    # Crea un'analisi dettagliata per ODT
     detailed_analysis = DetailedDocumentAnalysis(
         fonts={"Default": FontInfo(sizes=[11.0], count=1)},
         paragraph_count=len(doc.getElementsByType(OdtHeading)),
@@ -433,32 +433,32 @@ def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
     """Extract properties from PDF file"""
     pdf_bytes_io = io.BytesIO(file_content)
     
-    # Extract basic page properties with PyPDF2
+    # Estrae proprietà di pagina di base con PyPDF2
     pdf_reader = PyPDF2.PdfReader(pdf_bytes_io)
     page_count = len(pdf_reader.pages)
 
     if len(pdf_reader.pages) == 0:
         raise HTTPException(status_code=400, detail="PDF file has no pages")
     
-    # Get page size
+    # Ottiene dimensione pagina
     first_page = pdf_reader.pages[0]
     page_width_points = float(first_page.mediabox.width)
     page_height_points = float(first_page.mediabox.height)
     
-    # Convert points to cm (1 point = 0.0352778 cm)
+    # Converte punti in cm (1 punto = 0.0352778 cm)
     page_width_cm = page_width_points * 0.0352778
     page_height_cm = page_height_points * 0.0352778
     
-    # Get margins and headings using pdfplumber
+    # Ottiene margini e intestazioni usando pdfplumber
     headings = []
     has_toc = False
     
     with pdfplumber.open(pdf_bytes_io) as pdf:
-        # Process only first few pages for performance
+        # Elabora solo le prime pagine per performance
         pages_to_check = min(3, len(pdf.pages))
         
         # ---------- calcolo margini pagina ----------
-        # PDF coordinate origin: (0,0) in basso-sinistra
+        # Origine coordinate PDF: (0,0) in basso-sinistra
 
         # a) dimensioni carta (MediaBox)
         media_w_pt = page_width_points
@@ -466,13 +466,13 @@ def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
 
         # b) dimensioni area ritagliata (CropBox se presente, altrimenti MediaBox)
         try:
-            # PyPDF2 restituisce CoordinateObject; cast a float
+            # PyPDF2 restituisce CoordinateObject; converte a float
             crop_left   = float(first_page.cropbox.lower_left[0])
             crop_bottom = float(first_page.cropbox.lower_left[1])
             crop_right  = float(first_page.cropbox.upper_right[0])
             crop_top    = float(first_page.cropbox.upper_right[1])
         except Exception:
-            # CropBox mancante → usa MediaBox (zero margini)
+            # CropBox mancante → usa MediaBox (margini zero)
             crop_left = crop_bottom = 0.0
             crop_right  = media_w_pt
             crop_top    = media_h_pt
@@ -489,7 +489,7 @@ def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
         right_margin_cm  = right_margin_points  * 0.0352778
         top_margin_cm    = top_margin_points    * 0.0352778
             
-        # Check for headings and table of contents
+        # Controlla intestazioni e indice
         for i in range(pages_to_check):
             page = pdf.pages[i]
             text = page.extract_text()
@@ -497,17 +497,17 @@ def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
             if text:
                 lines = text.split('\n')
                 
-                # Look for potential headings (numbered sections or large text)
+                # Cerca potenziali intestazioni (sezioni numerate o testo grande)
                 for line in lines:
-                    # Simple heuristic: check for numbered sections (e.g., "1. Introduction", "2.1 Methods")
+                    # Euristica semplice: controlla sezioni numerate (es. "1. Introduzione", "2.1 Metodi")
                     if any(line.strip().startswith(f"{i}.") for i in range(1, 10)) or len(line.strip()) < 60:
                         headings.append(line.strip())
                         
-                # Look for "Table of Contents", "Contents", "Index" keywords
+                # Cerca parole chiave "Indice", "Contenuti", "Sommario"
                 if any(keyword in text for keyword in ["Table of Contents", "Contents", "Index", "TOC"]):
                     has_toc = True
         
-        # Ensure we have at least some dummy headings data if none detected
+        # Assicura di avere almeno alcuni dati fittizi se non rilevati
         if not headings and has_toc:
             headings = ["[PDF contains a Table of Contents]"]
     
@@ -518,7 +518,7 @@ def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
     footnotes = []
     
     with pdfplumber.open(pdf_bytes_io) as pdf:
-        for page in pdf.pages[:3]:  # analizza prime 3 pagine per esempio
+        for page in pdf.pages[:3]:  # analizza prime 3 pagine come esempio
             text = page.extract_text()
             if not text:
                 continue
@@ -549,7 +549,7 @@ def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalys
     pdf_bytes_io = io.BytesIO(file_content)
     pdf_doc = fitz.open(stream=pdf_bytes_io, filetype="pdf")
     
-    # Font analysis
+    # Analisi font
     fonts = {}
     paragraph_count = 0
     toc_structure = []
@@ -559,27 +559,27 @@ def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalys
     has_color_text = False
     colored_elements_count = 0
     
-    # Extract metadata
+    # Estrae metadati
     metadata = {}
     if pdf_doc.metadata:
         for key, value in pdf_doc.metadata.items():
             if value and key not in ['format', 'encryption']:
                 metadata[key] = str(value)
     
-    # Process each page
+    # Elabora ogni pagina
     for page_num, page in enumerate(pdf_doc):
-        # Count paragraphs (approximate based on blocks)
+        # Conta paragrafi (approssimativo basato sui blocchi)
         blocks = page.get_text("blocks")
         paragraph_count += len(blocks)
         
-        # Check if page has color
+        # Controlla se la pagina ha colori
         pixmap = page.get_pixmap()
         if pixmap.colorspace and pixmap.colorspace != fitz.csGRAY:
-            # Sample some pixels to check for non-grayscale colors
+            # Campiona alcuni pixel per controllare colori non in scala di grigi
             for i in range(0, pixmap.width, pixmap.width // 10):
                 for j in range(0, pixmap.height, pixmap.height // 10):
                     pixel = pixmap.pixel(i, j)
-                    # Check if RGB values differ (indicating color)
+                    # Controlla se i valori RGB differiscono (indica colore)
                     if len(pixel) >= 3 and not (pixel[0] == pixel[1] == pixel[2]):
                         has_color_pages = True
                         colored_elements_count += 1
@@ -587,7 +587,7 @@ def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalys
                 if has_color_pages:
                     break
         
-        # Extract images
+        # Estrae immagini
         image_list = page.get_images(full=True)
         for img_index, img in enumerate(image_list):
             image_count += 1
@@ -596,31 +596,31 @@ def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalys
                 base_image = pdf_doc.extract_image(xref)
                 if base_image:
                     total_image_size += len(base_image["image"])
-                    # Assuming images might have color
+                    # Assumendo che le immagini possano avere colori
                     has_color_pages = True
                     colored_elements_count += 1
             except:
                 pass
         
-        # Extract fonts and check for potential colored text
+        # Estrae font e controlla potenziale testo colorato
         for font in page.get_fonts():
             font_name = font[3]
             font_size = font[1]
             
-            # Check if font_size is a string and convert to float if needed
+            # Controlla se font_size è una stringa e convertila a float se necessario
             if isinstance(font_size, str):
                 try:
                     font_size = float(font_size)
                 except ValueError:
-                    font_size = 12.0  # Default font size if conversion fails
+                    font_size = 12.0  # Dimensione font di default se conversione fallisce
             
-            # Extract text colors (this is approximate in PDF)
+            # Estrae colori del testo (approssimativo in PDF)
             text_instances = page.search_for(font_name[:10] if len(font_name) > 10 else font_name)
             for inst in text_instances:
-                # Try to get color info from text spans
+                # Prova a ottenere informazioni colore dalle porzioni di testo
                 spans = page.get_textpage().extract_spans()
                 for span in spans:
-                    if span["color"] and span["color"] != 0:  # Non-black color
+                    if span["color"] and span["color"] != 0:  # Colore non nero
                         has_color_text = True
                         colored_elements_count += 1
                         break
@@ -635,7 +635,7 @@ def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalys
                     count=1
                 )
     
-    # Get document outline/TOC
+    # Ottiene struttura documento/indice
     toc = pdf_doc.get_toc()
     if toc:
         for t in toc:
@@ -645,14 +645,14 @@ def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalys
                 "text": title
             })
     
-    # Create ImageInfo
+    # Crea ImageInfo
     image_info = None
     if image_count > 0:
         avg_size_kb = (total_image_size / image_count) / 1024
         image_info = ImageInfo(count=image_count, avg_size_kb=round(avg_size_kb, 2))
     
-    # Estimate line spacing (very approximate for PDF)
-    line_spacing = {"Default": 1.2}  # Default line spacing estimate
+    # Stima interlinea (molto approssimativo per PDF)
+    line_spacing = {"Default": 1.2}  # Stima interlinea di default
     
     return DetailedDocumentAnalysis(
         fonts=fonts,
@@ -724,7 +724,7 @@ def validate_document(
     services = services or {}
     validations: Dict[str, bool] = {}
 
-    # Page size 
+    # Dimensione pagina
     if services.get("layout_service"):
         validations["page_size"] = True      # superato di default
     else:
@@ -744,19 +744,19 @@ def validate_document(
         right_ok  = abs(margins["right_cm"]  - spec.right_margin_cm)  < 0.5
         validations["margins"] = top_ok and bottom_ok and left_ok and right_ok
     
-    # Validate TOC if required
+    # Valida indice se richiesto
     toc_valid = True
     if spec.requires_toc:
         toc_valid = doc_props['has_toc']
     validations['has_toc'] = toc_valid
     
-    # Validate no color pages if required
+    # Valida assenza pagine a colori se richiesto
     color_pages_valid = True
     if spec.no_color_pages and 'detailed_analysis' in doc_props:
         color_pages_valid = not doc_props['detailed_analysis'].has_color_pages and not doc_props['detailed_analysis'].has_color_text
     validations['no_color_pages'] = color_pages_valid
     
-    # Validate no images if required
+    # Valida assenza immagini se richiesto
     no_images_valid = True
     if spec.no_images and 'detailed_analysis' in doc_props:
         no_images_valid = not doc_props['detailed_analysis'].images or doc_props['detailed_analysis'].images.count == 0
@@ -815,8 +815,8 @@ def generate_validation_report(
     GREEN   = colors.HexColor("#198754")
     RED     = colors.HexColor("#d32f2f")
     ACCENT  = colors.HexColor("#0d6efd")     # blu Bootstrap
-    BG_HEAD = colors.HexColor("#f2f4f6")     # grigio very-light
-    
+    BG_HEAD = colors.HexColor("#f2f4f6")     # grigio molto chiaro
+
     # ── helper: converte Color → '#RRGGBB' ────────────────────────
     def hex_(c):
         """ReportLab Color → HEX string '#RRGGBB'."""
@@ -878,7 +878,7 @@ def generate_validation_report(
     )
     elements.append(Spacer(1, 1.2 * cm))
 
-    # summary box
+    # riquadro riassuntivo
     status_txt  = "CONFORME" if validation_result.is_valid else "NON CONFORME"
     status_col  = GREEN if validation_result.is_valid else RED
 
@@ -890,7 +890,7 @@ def generate_validation_report(
     summary_tbl = Table(
         [
             ["Documento", validation_result.document_name],
-            ["Risultato", status_cell],          # ← uso Paragraph
+            ["Risultato", status_cell],          # ← usa Paragraph
             ["Specifica", spec.name],
         ],
         colWidths=[4 * cm, 11 * cm],
@@ -908,7 +908,7 @@ def generate_validation_report(
     elements.append(summary_tbl)
     elements.append(Spacer(1, 1 * cm))
 
-    # ───────────────────── 2) VALIDATION TABLE ────────────────────
+    # ───────────────────── 2) TABELLA VALIDAZIONE ────────────────────
     elements.append(Paragraph("Dettaglio verifiche", styles["Heading2"]))
     elements.append(Spacer(1, 0.2 * cm))
 
@@ -942,21 +942,21 @@ def generate_validation_report(
     elements.append(HRFlowable(width="100%", color=colors.grey))
     elements.append(Spacer(1, 0.8 * cm))
 
-    # ───────────────────── 3) FONT DISTRIBUTION ───────────────────
+    # ───────────────────── 3) DISTRIBUZIONE FONT ───────────────────
     if report_format.include_charts and validation_result.detailed_analysis:
         da = validation_result.detailed_analysis
         if da.fonts:
             elements.append(Paragraph("Distribuzione font", styles["Heading2"]))
             elements.append(Spacer(1, 0.2 * cm))
 
-            # header
+            # intestazione
             font_rows = [["Font", "Size pt → occorrenze", "Totale"]]
 
-            # ordina i font per utilizzo desc.
+            # ordina i font per utilizzo discendente
             for name, info in sorted(
                 da.fonts.items(), key=lambda it: it[1].count, reverse=True
             ):
-                # ordina le singole size per occorrenze desc. e mandale a capo
+                # ordina le singole dimensioni per occorrenze discendenti e vai a capo
                 size_parts = sorted(
                     info.size_counts.items(), key=lambda p: p[1], reverse=True
                 )
@@ -981,7 +981,7 @@ def generate_validation_report(
             elements.append(font_tbl)
             elements.append(Spacer(1, 0.5 * cm))
 
-    # ───────────────────── 4) RECOMMENDATIONS  ────────────────────
+    # ───────────────────── 4) RACCOMANDAZIONI  ────────────────────
     if report_format.include_recommendations and not validation_result.is_valid:
         elements.append(Paragraph("Raccomandazioni", styles["Heading2"]))
         elements.append(Spacer(1, 0.2 * cm))
@@ -1003,7 +1003,7 @@ def generate_validation_report(
             elements.append(Paragraph("• " + b, styles["Normal"]))
             elements.append(Spacer(1, 0.1 * cm))
 
-    # ───────────────────── 5) RAW JSON (opzionale) ────────────────
+    # ───────────────────── 5) JSON GREZZO (opzionale) ────────────────
     if report_format.include_detailed_analysis and validation_result.raw_props:
         elements.append(PageBreak())
         elements.append(Paragraph("Raw extract (debug)", styles["Heading2"]))
@@ -1017,10 +1017,10 @@ def generate_validation_report(
             fontSize=7,
             leading=8,
         )
-        for line in raw_json.split("\n")[:800]:  # mostra max ~800 righe
+        for line in raw_json.split("\n")[:800]:  # mostra massimo ~800 righe
             elements.append(Paragraph(line.replace(" ", "&nbsp;"), mono))
 
-    # ───────────────────── BUILD PDF ──────────────────────────────
+    # ───────────────────── COSTRUISCI PDF ──────────────────────────────
     doc.build(elements)
     buff.seek(0)
     return buff.read()
@@ -1040,12 +1040,12 @@ def send_ticket_to_zendesk(
     Il requester viene impostato all’e-mail del cliente; l’agente API rimane assegnato
     ma il cliente riceverà la notifica come vero mittente.
     """
-    s = settings  # shorthand
+    s = settings  # abbreviazione
 
     auth = (f"{s.ZENDESK_EMAIL}/token", s.ZENDESK_API_TOKEN)
     base = f"https://{s.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2"
 
-    # ---- 1) upload attachment ---------------------------------
+    # ---- 1) carica allegato ---------------------------------
     up_res = requests.post(
         f"{base}/uploads.json?filename={pdf_name}",
         auth=auth,
@@ -1054,11 +1054,11 @@ def send_ticket_to_zendesk(
     up_res.raise_for_status()
     upload_token = up_res.json()["upload"]["token"]
 
-    # ---- 2) create ticket -------------------------------------
+    # ---- 2) crea ticket -------------------------------------
     ticket_data = {
         "ticket": {
             "subject": subject,
-            # SET del requester esterno
+            # IMPOSTA del richiedente esterno
             "requester": {"name": requester_email.split("@")[0], "email": requester_email},
             "comment": {
                 "body": body,
@@ -1082,10 +1082,10 @@ def send_ticket_to_zendesk(
 from api import api_router as api_routes
 app.include_router(api_routes)
 
-# =====  STATIC FILES & FRONTEND  =====
+# =====  FILE STATICI & FRONTEND  =====
 import sys, pathlib
 if getattr(sys, 'frozen', False):
-    BASE_DIR = pathlib.Path(sys._MEIPASS)  # cartella temp del bundle
+    BASE_DIR = pathlib.Path(sys._MEIPASS)  # cartella temporanea del bundle
 else:
     BASE_DIR = pathlib.Path(__file__).parent
 app.mount(
@@ -1094,13 +1094,13 @@ app.mount(
     name="static",
 )
 
-# redirect '/' → GUI
+# reindirizza '/' → GUI
 @app.get("/", include_in_schema=False)
 async def frontend():
     return RedirectResponse(url="/static/index.html")
 # =====================================
 
-# CORS configuration
+# Configurazione CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -1109,23 +1109,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Add GZip compression for performance
+# Aggiungi compressione GZip per le prestazioni
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# Add trusted host middleware for security
+# Aggiungi middleware host fidati per la sicurezza
 if os.environ.get("ENVIRONMENT") == "production":
     app.add_middleware(
-        TrustedHostMiddleware, allowed_hosts=["*"]  # Configure with your actual domain in production
+        TrustedHostMiddleware, allowed_hosts=["*"]  # Configura con il tuo dominio reale in produzione
     )
 
-# Configure logging
+# Configura logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Exception handler for uncaught exceptions
+# Gestore eccezioni per eccezioni non catturate
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     """Global exception handler for uncaught exceptions"""
