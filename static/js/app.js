@@ -40,6 +40,11 @@ async function validaDocumento() {
     const da    = props.detailed_analysis || {};
 
     const f = n => (typeof n === 'number' ? n.toFixed(1) : '—');
+    // restituisce ✓ verde se ok, ✗ rosso se KO, stringa vuota se la chiave non esiste
+    const tick = ok =>
+      ok === undefined
+        ? ''
+        : `<span style="color:${ok ? '#198754' : '#d32f2f'};font-weight:bold;">${ok ? '✓' : '✗'}</span> `;
 
     /* stampa colori / B&N */
     const stampaHTML = (da.has_color_pages || da.has_color_text)
@@ -76,20 +81,22 @@ async function validaDocumento() {
     }
 
     /*────────── compila riquadro ──────────*/
+    const v = data.validations || {};
+
     const infoLines = [
-      'Stampa:               ' + stampaHTML,
-      'Pagine a colori:      ' + pagineColori,
+      'Stampa:               ' + tick(v.no_color_pages) + stampaHTML,
+      'Pagine a colori:      ' + tick(v.no_color_pages) + pagineColori,
       'Nome file:            ' + (data.document_name || '—'),
       'Formato file:         ' + ((data.file_format || '').toUpperCase() || '—'),
-      'Dimensioni pagina:    ' + f(sz.width_cm) + ' × ' + f(sz.height_cm) + ' cm',
+      'Dimensioni pagina:    ' + tick(v.page_size) + f(sz.width_cm) + ' × ' + f(sz.height_cm) + ' cm',
       'Pagine totali:        ' + (props.page_count != null ? props.page_count : '—'),
-      'Margini (cm):         T ' + f(mg.top_cm) +
+      'Margini (cm):         ' + tick(v.margins) + 'T ' + f(mg.top_cm) +
                                ' · B ' + f(mg.bottom_cm) +
                                ' · L ' + f(mg.left_cm) +
                                ' · R ' + f(mg.right_cm),
-      'Intestazioni:         ' + intestazioni,
-      'Piè di pagina:        ' + piedipagina,
-      'TOC presente:         ' + (props.has_toc ? 'Sì' : 'No'),
+      'Intestazioni:         ' + tick(v.has_header) + intestazioni,
+      'Piè di pagina:        ' + tick(v.has_footnotes) + piedipagina,
+      'TOC presente:         ' + tick(v.has_toc) + (props.has_toc ? 'Sì' : 'No'),
       '',
       'Font (nome e dimensioni):',
       fontLines
@@ -130,6 +137,19 @@ async function validaDocumento() {
     q('emailBody').value   = bodyTxt;   // pre-compila testo
     q('emailMsg').textContent = '';
     q('emailCard').style.display = 'block';
+
+    const summary = q('summaryMsg');
+    if (data.is_valid) {
+      summary.innerHTML = '<span style="color:#198754;">IL FILE È CONFORME</span>';
+    } else {
+      const reasons = Object.entries(data.validations)
+        .filter(([, ok]) => !ok)
+        .map(([chk]) => chk.replaceAll('_', ' '))
+        .join(', ');
+      summary.innerHTML =
+        `<span style="color:#d32f2f;">IL FILE NON È CONFORME</span>` +
+        (reasons ? `<br/><small>Motivi: ${reasons}</small>` : '');
+    }
 
   } catch (err) {
     alert(err.message);
