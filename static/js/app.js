@@ -84,12 +84,10 @@ async function validaDocumento() {
     const v = data.validations || {};
 
     const infoLines = [
-      'Stampa:               ' + tick(v.no_color_pages) + stampaHTML,
-      'Pagine a colori:      ' + tick(v.no_color_pages) + pagineColori,
-      'Nome file:            ' + (data.document_name || '—'),
-      'Formato file:         ' + ((data.file_format || '').toUpperCase() || '—'),
       'Dimensioni pagina:    ' + tick(v.page_size) + f(sz.width_cm) + ' × ' + f(sz.height_cm) + ' cm',
+      'Stampa:               ' + tick(v.no_color_pages) + stampaHTML,
       'Pagine totali:        ' + (props.page_count != null ? props.page_count : '—'),
+      'Pagine a colori:      ' + tick(v.no_color_pages) + pagineColori,
       'Margini (cm):         ' + tick(v.margins) + 'T ' + f(mg.top_cm) +
                                ' · B ' + f(mg.bottom_cm) +
                                ' · L ' + f(mg.left_cm) +
@@ -99,6 +97,8 @@ async function validaDocumento() {
       'TOC presente:         ' + tick(v.has_toc) + (props.has_toc ? 'Sì' : 'No'),
       '',
       'Font (nome e dimensioni):',
+      'Nome file:            ' + (data.document_name || '—'),
+      'Formato file:         ' + ((data.file_format || '').toUpperCase() || '—'),
       fontLines
     ].join('\n');
 
