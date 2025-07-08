@@ -1,8 +1,9 @@
 # config.py
+import sys
 from pydantic_settings import BaseSettings
 from typing import List, Optional
 from datetime import timedelta
-
+from pathlib import Path
 
 class Settings(BaseSettings):
     # --- Database (opzionale nella versione Lite) -------------------
@@ -30,7 +31,9 @@ class Settings(BaseSettings):
         return timedelta(minutes=self.ACCESS_TOKEN_EXPIRE_MINUTES)
 
     class Config:
-        env_file = ".env"
+        # ── trova la cartella in cui è stato scompattato il bundle ──
+        BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        env_file = BASE_DIR / ".env"           # <-- stesso nome che includi
         env_file_encoding = "utf-8"
 
 settings = Settings()

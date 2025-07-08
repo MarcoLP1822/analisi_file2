@@ -786,357 +786,245 @@ def validate_document(
         'is_valid': is_valid
     }
 
+# ──────────────────────────────────────────────────────────────────
+#  GENERATE PDF – versione “client-friendly”
+# ──────────────────────────────────────────────────────────────────
 def generate_validation_report(
     validation_result: ValidationResult,
     spec: DocumentSpec,
-    report_format: ReportFormat
+    report_format: ReportFormat,
 ) -> bytes:
-    """Generate a PDF report of validation results"""
-    # Create temporary file for the PDF
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_file:
-        temp_path = tmp_file.name
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import (
+        SimpleDocTemplate,
+        Table,
+        TableStyle,
+        Paragraph,
+        Spacer,
+        Image,
+        PageBreak,
+        HRFlowable,
+    )
+    import io, datetime, pathlib
+
+    # ── palette aziendale ─────────────────────────────────────────
+    GREEN   = colors.HexColor("#198754")
+    RED     = colors.HexColor("#d32f2f")
+    ACCENT  = colors.HexColor("#0d6efd")     # blu Bootstrap
+    BG_HEAD = colors.HexColor("#f2f4f6")     # grigio very-light
     
-    # Create the PDF document
-    doc = SimpleDocTemplate(temp_path, pagesize=A4)
+    # ── helper: converte Color → '#RRGGBB' ────────────────────────
+    def hex_(c):
+        """ReportLab Color → HEX string '#RRGGBB'."""
+        return f"#{c.hexval()[2:]}"        # '0xRRGGBB' → '#RRGGBB'
+
+
+    # ── logo opzionale (PNG trasparente 200×60) ───────────────────
+    LOGO_PATH = pathlib.Path(__file__).parent / "static" / "logo.png"
+    logo_present = LOGO_PATH.exists()
+
+    # ── buffer in memoria ─────────────────────────────────────────
+    buff = io.BytesIO()
+    doc  = SimpleDocTemplate(
+        buff,
+        pagesize=A4,
+        rightMargin=2 * cm,
+        leftMargin=2 * cm,
+        topMargin=2 * cm,
+        bottomMargin=2 * cm,
+    )
+
     styles = getSampleStyleSheet()
+    styles.add(
+        ParagraphStyle(
+            "TitleXL",
+            parent=styles["Title"],
+            fontSize=24,
+            textColor=ACCENT,
+            alignment=TA_CENTER,
+            spaceAfter=6,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            "Small",
+            parent=styles["Normal"],
+            fontSize=9,
+            leading=11,
+        )
+    )
+
     elements = []
-    
-    # Add title
-    title_style = ParagraphStyle(
-        'Title',
-        parent=styles['Title'],
-        alignment=TA_CENTER,
-        fontSize=20,
-        spaceAfter=20
+
+    # ───────────────────── 1) COPERTINA ───────────────────────────
+    if logo_present:
+        elements.append(
+            Image(str(LOGO_PATH), width=6 * cm, height=2 * cm, hAlign="CENTER")
+        )
+        elements.append(Spacer(1, 0.4 * cm))
+
+    elements.append(
+        Paragraph("Document Validation Report", styles["TitleXL"])
     )
-    title = Paragraph(f"Document Validation Report", title_style)
-    elements.append(title)
-    elements.append(Spacer(1, 0.5*cm))
-    
-    # Document information
-    subtitle_style = ParagraphStyle(
-        'Subtitle',
-        parent=styles['Heading2'],
-        fontSize=16,
-        spaceAfter=10
+    elements.append(
+        Paragraph(
+            datetime.datetime.utcnow().strftime("%d %B %Y, %H:%M UTC"),
+            styles["Small"],
+        )
     )
-    elements.append(Paragraph("Document Information", subtitle_style))
-    elements.append(Spacer(1, 0.2*cm))
-    
-    # Document info table
-    doc_info = [
-        ["Document Name", validation_result.document_name],
-        ["Format", validation_result.file_format.upper()],
-        ["Specification", validation_result.spec_name],
-        ["Validation Date", validation_result.created_at.strftime("%Y-%m-%d %H:%M")]
-    ]
-    info_table = Table(doc_info, colWidths=[4*cm, 12*cm])
-    info_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
-        ('TEXTCOLOR', (0, 0), (0, -1), colors.black),
-        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('BACKGROUND', (1, 0), (-1, -1), colors.white),
-        ('GRID', (0, 0), (-1, -1), 1, colors.black)
-    ]))
-    elements.append(info_table)
-    elements.append(Spacer(1, 0.5*cm))
-    
-    # Validation Results section
-    elements.append(Paragraph("Validation Results", subtitle_style))
-    elements.append(Spacer(1, 0.2*cm))
-    
-    # Overall result
-    status_text = "PASSED" if validation_result.is_valid else "FAILED"
-    status_color = colors.green if validation_result.is_valid else colors.red
-    
-    overall_result = Paragraph(f"Overall Status: <font color={status_color}>{status_text}</font>", styles['Normal'])
-    elements.append(overall_result)
-    elements.append(Spacer(1, 0.3*cm))
-    
-    # Validation checks table
-    checks_data = [
-        ["Check Type", "Expected", "Actual", "Status"]
-    ]
-    
-    # Page size check
-    page_size_status = "✓" if validation_result.validations['page_size'] else "✗"
-    page_size_color = colors.green if validation_result.validations['page_size'] else colors.red
-    
-    expected_size = f"{spec.page_width_cm:.1f} × {spec.page_height_cm:.1f} cm"
-    
-    # Use data from validation result to approximate actual values
-    # In a real app, we would store these values during validation
-    actual_size = expected_size
-    if not validation_result.validations['page_size']:
-        # Just for demonstration - would use actual values in real app
-        actual_size = f"{spec.page_width_cm+1:.1f} × {spec.page_height_cm-1:.1f} cm"
-        
-    checks_data.append([
-        "Page Size", 
-        expected_size, 
-        actual_size,
-        Paragraph(f"<font color={page_size_color}>{page_size_status}</font>", styles['Normal'])
-    ])
-    
-    # Margins check
-    margins_status = "✓" if validation_result.validations['margins'] else "✗"
-    margins_color = colors.green if validation_result.validations['margins'] else colors.red
-    
-    expected_margins = f"T:{spec.top_margin_cm:.1f}, B:{spec.bottom_margin_cm:.1f}, L:{spec.left_margin_cm:.1f}, R:{spec.right_margin_cm:.1f} cm"
-    
-    # Use data from validation result to approximate actual values
-    actual_margins = expected_margins
-    if not validation_result.validations['margins']:
-        # Just for demonstration - would use actual values in real app
-        actual_margins = f"T:{spec.top_margin_cm-0.5:.1f}, B:{spec.bottom_margin_cm+0.5:.1f}, L:{spec.left_margin_cm+0.3:.1f}, R:{spec.right_margin_cm-0.2:.1f} cm"
-        
-    checks_data.append([
-        "Margins", 
-        expected_margins, 
-        actual_margins,
-        Paragraph(f"<font color={margins_color}>{margins_status}</font>", styles['Normal'])
-    ])
-    
-    # TOC check
-    toc_status = "✓" if validation_result.validations['has_toc'] else "✗"
-    toc_color = colors.green if validation_result.validations['has_toc'] else colors.red
-    
-    expected_toc = "Required" if spec.requires_toc else "Not Required"
-    actual_toc = "Present" if validation_result.validations['has_toc'] or not spec.requires_toc else "Missing"
-    
-    checks_data.append([
-        "Table of Contents", 
-        expected_toc, 
-        actual_toc,
-        Paragraph(f"<font color={toc_color}>{toc_status}</font>", styles['Normal'])
-    ])
-    
-    checks_table = Table(checks_data, colWidths=[4*cm, 5*cm, 5*cm, 2*cm])
-    checks_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
-        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('GRID', (0, 0), (-1, -1), 1, colors.black)
-    ]))
-    elements.append(checks_table)
-    elements.append(Spacer(1, 0.5*cm))
-    
-    # Include charts if requested
-    if report_format.include_charts:
-        elements.append(Paragraph("Document Analysis Charts", subtitle_style))
-        elements.append(Spacer(1, 0.2*cm))
-        
-        # Create a simple text-based chart instead of using matplotlib
-        # ───── Font Usage Distribution ─────
-        if (
-            validation_result.detailed_analysis
-            and validation_result.detailed_analysis.fonts
-        ):
-            elements.append(Paragraph("Font Usage Distribution", styles["Heading3"]))
+    elements.append(Spacer(1, 1.2 * cm))
+
+    # summary box
+    status_txt  = "CONFORME" if validation_result.is_valid else "NON CONFORME"
+    status_col  = GREEN if validation_result.is_valid else RED
+
+    status_cell = Paragraph(
+        f"<b><font color='{hex_(status_col)}'>{status_txt}</font></b>",
+        styles["Normal"],
+    )
+
+    summary_tbl = Table(
+        [
+            ["Documento", validation_result.document_name],
+            ["Risultato", status_cell],          # ← uso Paragraph
+            ["Specifica", spec.name],
+        ],
+        colWidths=[4 * cm, 11 * cm],
+        hAlign="LEFT",
+        style=[
+            ("BACKGROUND", (0, 0), (-1, 0), BG_HEAD),
+            ("BACKGROUND", (0, 2), (-1, 2), BG_HEAD),
+            ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("BOX", (0, 0), (-1, -1), 0.25, colors.grey),
+        ],
+    )
+
+    elements.append(summary_tbl)
+    elements.append(Spacer(1, 1 * cm))
+
+    # ───────────────────── 2) VALIDATION TABLE ────────────────────
+    elements.append(Paragraph("Dettaglio verifiche", styles["Heading2"]))
+    elements.append(Spacer(1, 0.2 * cm))
+
+    check_rows = [["Verifica", "Esito"]]
+    for check, ok in validation_result.validations.items():
+        pretty = check.replace("_", " ").capitalize()
+        sign   = "✓" if ok else "✗"
+        color  = GREEN if ok else RED
+
+        esito  = Paragraph(
+            f"<font color='{hex_(color)}'>{sign}</font>",
+            styles["Normal"],
+        )
+        check_rows.append([pretty, esito])      # ← usa Paragraph
+
+    val_table = Table(
+        check_rows,
+        colWidths=[10 * cm, 2 * cm],
+        hAlign="LEFT",
+        style=[
+            ("BACKGROUND", (0, 0), (-1, 0), BG_HEAD),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("ALIGN", (1, 1), (-1, -1), "CENTER"),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+            ("BOX", (0, 0), (-1, -1), 0.25, colors.grey),
+        ],
+    )
+    elements.append(val_table)
+
+    elements.append(Spacer(1, 0.8 * cm))
+    elements.append(HRFlowable(width="100%", color=colors.grey))
+    elements.append(Spacer(1, 0.8 * cm))
+
+    # ───────────────────── 3) FONT DISTRIBUTION ───────────────────
+    if report_format.include_charts and validation_result.detailed_analysis:
+        da = validation_result.detailed_analysis
+        if da.fonts:
+            elements.append(Paragraph("Distribuzione font", styles["Heading2"]))
+            elements.append(Spacer(1, 0.2 * cm))
+
+            # header
+            font_rows = [["Font", "Size pt → occorrenze", "Totale"]]
+
+            # ordina i font per utilizzo desc.
+            for name, info in sorted(
+                da.fonts.items(), key=lambda it: it[1].count, reverse=True
+            ):
+                # ordina le singole size per occorrenze desc. e mandale a capo
+                size_parts = sorted(
+                    info.size_counts.items(), key=lambda p: p[1], reverse=True
+                )
+                size_lines = "<br/>".join(f"{s} → {c}" for s, c in size_parts)
+
+                # usa Paragraph per supportare <br/>
+                size_para = Paragraph(size_lines, styles["Small"])
+                font_rows.append([name, size_para, str(info.count)])
+
+            font_tbl = Table(
+                font_rows,
+                colWidths=[5 * cm, 7 * cm, 3 * cm],
+                style=[
+                    ("BACKGROUND", (0, 0), (-1, 0), BG_HEAD),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+                    ("BOX", (0, 0), (-1, -1), 0.25, colors.grey),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, BG_HEAD]),
+                    ("VALIGN", (0, 1), (-1, -1), "TOP"),
+                ],
+            )
+            elements.append(font_tbl)
+            elements.append(Spacer(1, 0.5 * cm))
+
+    # ───────────────────── 4) RECOMMENDATIONS  ────────────────────
+    if report_format.include_recommendations and not validation_result.is_valid:
+        elements.append(Paragraph("Raccomandazioni", styles["Heading2"]))
+        elements.append(Spacer(1, 0.2 * cm))
+
+        bullets = []
+        if not validation_result.validations["page_size"]:
+            bullets.append(
+                f"Adeguare la dimensione pagina a "
+                f"{spec.page_width_cm} × {spec.page_height_cm} cm."
+            )
+        if not validation_result.validations["margins"]:
+            bullets.append(
+                "Verificare i margini per rispettare i valori specificati."
+            )
+        if not validation_result.validations["has_toc"] and spec.requires_toc:
+            bullets.append("Inserire un indice automatico (TOC).")
+
+        for b in bullets:
+            elements.append(Paragraph("• " + b, styles["Normal"]))
             elements.append(Spacer(1, 0.1 * cm))
 
-            # (nome, FontInfo) ordinati per utilizzo
-            top_fonts = sorted(
-                validation_result.detailed_analysis.fonts.items(),
-                key=lambda item: item[1].count,
-                reverse=True,
-            )[:5]
-
-            font_data = [["Font Name", "Usage Count", "Distribution"]]
-            total_count = sum(f.count for _, f in top_fonts) or 1  # evita div/0
-
-            for font_name, font_info in top_fonts:
-                percentage = (font_info.count / total_count) * 100
-                bar = "█" * int(percentage / 5)
-
-                font_data.append(
-                    [font_name, str(font_info.count), f"{bar} ({percentage:.1f}%)"]
-                )
-
-            font_table = Table(font_data, colWidths=[6 * cm, 3 * cm, 7 * cm])
-            font_table.setStyle(
-                TableStyle(
-                    [
-                        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                        ("FONTSIZE", (0, 0), (-1, -1), 9),
-                        ("GRID", (0, 0), (-1, -1), 1, colors.lightgrey),
-                    ]
-                )
-            )
-            elements.append(font_table)
-            elements.append(Spacer(1, 0.3 * cm))
-        
-        # Add a simple validation results chart
-        elements.append(Paragraph("Validation Results", styles['Heading3']))
-        elements.append(Spacer(1, 0.1*cm))
-        
-        # Count passes and fails
-        passes = sum(1 for result in validation_result.validations.values() if result)
-        fails = sum(1 for result in validation_result.validations.values() if not result)
-        total = passes + fails
-        
-        pass_percentage = (passes / total) * 100 if total > 0 else 0
-        fail_percentage = (fails / total) * 100 if total > 0 else 0
-        
-        validation_data = [
-            ["Result", "Count", "Percentage", "Distribution"],
-            ["Pass", str(passes), f"{pass_percentage:.1f}%", "█" * int(pass_percentage / 5)],
-            ["Fail", str(fails), f"{fail_percentage:.1f}%", "█" * int(fail_percentage / 5)]
-        ]
-        
-        validation_table = Table(validation_data, colWidths=[3*cm, 3*cm, 3*cm, 7*cm])
-        validation_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
-            ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 9),
-            ('GRID', (0, 0), (-1, -1), 1, colors.lightgrey),
-            ('TEXTCOLOR', (0, 1), (0, 1), colors.green),
-            ('TEXTCOLOR', (0, 2), (0, 2), colors.red),
-            ('FONTNAME', (0, 1), (0, 2), 'Helvetica-Bold')
-        ]))
-        elements.append(validation_table)
-        elements.append(Spacer(1, 0.3*cm))
-    
-    # Include detailed analysis if requested
-    if report_format.include_detailed_analysis and validation_result.detailed_analysis:
-        elements.append(Paragraph("Detailed Document Analysis", subtitle_style))
-        elements.append(Spacer(1, 0.2*cm))
-        
-        # Metadata table
-        if validation_result.detailed_analysis.metadata:
-            elements.append(Paragraph("Document Metadata", styles['Heading3']))
-            elements.append(Spacer(1, 0.1*cm))
-            
-            metadata_rows = [[key, value] for key, value in validation_result.detailed_analysis.metadata.items()]
-            if metadata_rows:
-                metadata_table = Table(metadata_rows, colWidths=[4*cm, 12*cm])
-                metadata_table.setStyle(TableStyle([
-                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, -1), 9),
-                    ('GRID', (0, 0), (-1, -1), 1, colors.lightgrey)
-                ]))
-                elements.append(metadata_table)
-                elements.append(Spacer(1, 0.3*cm))
-        
-        # Font details
-        if validation_result.detailed_analysis.fonts:
-            elements.append(Paragraph("Font Information", styles['Heading3']))
-            elements.append(Spacer(1, 0.1*cm))
-            
-            font_rows = [["Font Name", "Font Sizes", "Usage Count"]]
-            for font_name, font_info in validation_result.detailed_analysis.fonts.items():
-                font_rows.append([
-                    font_name,
-                    ", ".join([str(size) for size in font_info.sizes]),
-                    str(font_info.count)
-                ])
-                
-            font_table = Table(font_rows, colWidths=[6*cm, 6*cm, 4*cm])
-            font_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
-                ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 9),
-                ('GRID', (0, 0), (-1, -1), 1, colors.lightgrey)
-            ]))
-            elements.append(font_table)
-            elements.append(Spacer(1, 0.3*cm))
-        
-        # Table of Contents structure
-        if validation_result.detailed_analysis.toc_structure:
-            elements.append(Paragraph("Table of Contents Structure", styles['Heading3']))
-            elements.append(Spacer(1, 0.1*cm))
-            
-            toc_rows = [["Level", "Heading"]]
-            for toc_entry in validation_result.detailed_analysis.toc_structure:
-                toc_rows.append([
-                    toc_entry["level"],
-                    toc_entry["text"]
-                ])
-                
-            toc_table = Table(toc_rows, colWidths=[2*cm, 14*cm])
-            toc_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
-                ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 9),
-                ('GRID', (0, 0), (-1, -1), 1, colors.lightgrey)
-            ]))
-            elements.append(toc_table)
-            elements.append(Spacer(1, 0.3*cm))
-    
-    # Include recommendations if requested
-    if report_format.include_recommendations and not validation_result.is_valid:
-        elements.append(Paragraph("Recommendations", subtitle_style))
-        elements.append(Spacer(1, 0.2*cm))
-        
-        recommendations = [
-            "1. Ensure the document meets the required page size specifications.",
-            "2. Check and adjust document margins to match the required values.",
-            "3. Include a proper table of contents if required by the specification."
-        ]
-        
-        if not validation_result.validations['page_size']:
-            recommendations.append(f"4. Current page size differs from the required {spec.page_width_cm:.1f} × {spec.page_height_cm:.1f} cm. Adjust page setup in your document editor.")
-        
-        if not validation_result.validations['margins']:
-            recommendations.append(f"5. Current margins do not match the required values (T:{spec.top_margin_cm:.1f}, B:{spec.bottom_margin_cm:.1f}, L:{spec.left_margin_cm:.1f}, R:{spec.right_margin_cm:.1f} cm). Adjust margin settings.")
-        
-        if not validation_result.validations['has_toc'] and spec.requires_toc:
-            recommendations.append("6. Add a Table of Contents to your document using your document editor's TOC generation feature.")
-        
-        for rec in recommendations:
-            elements.append(Paragraph(rec, styles['Normal']))
-            elements.append(Spacer(1, 0.1*cm))
-    # ------------------------------------------------------------------
-    # SEZIONE RAW PROPS (dump integrale)
-    if validation_result.raw_props:
-        elements.append(Paragraph("Dettaglio completo estrazione", subtitle_style))
-        elements.append(Spacer(1, 0.2*cm))
+    # ───────────────────── 5) RAW JSON (opzionale) ────────────────
+    if report_format.include_detailed_analysis and validation_result.raw_props:
+        elements.append(PageBreak())
+        elements.append(Paragraph("Raw extract (debug)", styles["Heading2"]))
+        elements.append(Spacer(1, 0.2 * cm))
 
         raw_json = json.dumps(validation_result.raw_props, indent=2, ensure_ascii=False)
-        # tronca se > 20 000 caratteri (evita PDF enorme)
-        if len(raw_json) > 20000:
-            raw_json = raw_json[:20000] + "\n... (troncato)"
-
-        # usa Paragraph con font monospace
         mono = ParagraphStyle(
-            'monospace',
-            parent=styles['Code'],
-            fontName='Courier',
-            fontSize=8,
-            leading=9,
+            "Mono",
+            parent=styles["Code"],
+            fontName="Courier",
+            fontSize=7,
+            leading=8,
         )
-        for line in raw_json.split("\n"):
+        for line in raw_json.split("\n")[:800]:  # mostra max ~800 righe
             elements.append(Paragraph(line.replace(" ", "&nbsp;"), mono))
-        elements.append(Spacer(1, 0.5*cm))
-    
-    # Build the PDF
+
+    # ───────────────────── BUILD PDF ──────────────────────────────
     doc.build(elements)
-    
-    # Read the generated PDF
-    with open(temp_path, 'rb') as pdf_file:
-        pdf_content = pdf_file.read()
-    
-    # Clean up temporary file
-    try:
-        os.unlink(temp_path)
-    except:
-        pass
-    
-    return pdf_content
+    buff.seek(0)
+    return buff.read()
+
 
 def send_ticket_to_zendesk(
     subject: str,
