@@ -4,3 +4,24 @@ pydantic
 python-dotenv
 pydantic-settings
 email-validator
+
+# FastAPI dependencies
+python-multipart
+
+# Document processing libraries
+python-docx
+odfpy
+PyPDF2
+pdfplumber
+PyMuPDF
+pdfminer.six
+
+# Security and authentication
+python-jose[cryptography]
+passlib[bcrypt]
+
+# PDF generation
+reportlab
+
+# HTTP requests
+requests

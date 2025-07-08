@@ -21,9 +21,9 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE: int = 20 * 1024 * 1024   # 20 MB
     ALLOWED_ORIGINS: List[str] = ["*"]      # restringi in prod
 
-    ZENDESK_SUBDOMAIN: str
-    ZENDESK_EMAIL: str
-    ZENDESK_API_TOKEN: str
+    ZENDESK_SUBDOMAIN: Optional[str] = None
+    ZENDESK_EMAIL: Optional[str] = None
+    ZENDESK_API_TOKEN: Optional[str] = None
 
     # Helper per FastAPI
     @property
