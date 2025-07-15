@@ -83,8 +83,20 @@ async function validaDocumento() {
     /*────────── compila riquadro ──────────*/
     const v = data.validations || {};
 
+    // Controlla inconsistenze di formato
+    let formatWarnings = '';
+    if (props.inconsistent_pages && props.inconsistent_pages.length > 0) {
+      const pages = props.inconsistent_pages.map(p => `Pag. ${p.page}: ${p.size}`).join(', ');
+      formatWarnings = `\n⚠️  PAGINE CON FORMATO DIVERSO: ${pages}`;
+    }
+    if (props.inconsistent_sections && props.inconsistent_sections.length > 0) {
+      const sections = props.inconsistent_sections.map(s => `Sez. ${s.section}: ${s.size}`).join(', ');
+      formatWarnings = `\n⚠️  SEZIONI CON FORMATO DIVERSO: ${sections}`;
+    }
+
     const infoLines = [
       'Dimensioni pagina:    ' + tick(v.page_size) + f(sz.width_cm) + ' × ' + f(sz.height_cm) + ' cm',
+      'Consistenza formato:  ' + tick(v.format_consistency) + (v.format_consistency ? 'Uniforme' : 'Variabile') + formatWarnings,
       'Stampa:               ' + tick(v.no_color_pages) + stampaHTML,
       'Pagine totali:        ' + (props.page_count != null ? props.page_count : '—'),
       'Pagine a colori:      ' + tick(v.no_color_pages) + pagineColori,

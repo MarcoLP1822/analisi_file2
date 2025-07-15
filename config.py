@@ -1,4 +1,5 @@
 # config.py
+
 import sys
 from pydantic_settings import BaseSettings
 from typing import List, Optional
@@ -35,6 +36,7 @@ class Settings(BaseSettings):
         BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
         env_file = BASE_DIR / ".env"           # <-- stesso nome che includi
         env_file_encoding = "utf-8"
-
+import os
+print("DEBUG ALLOWED_ORIGINS_RAW:", os.getenv("ALLOWED_ORIGINS"))
 settings = Settings()
 

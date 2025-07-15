@@ -171,17 +171,41 @@ def extract_docx_properties(file_content: bytes) -> Dict[str, Any]:
             if texts:
                 footnotes_texts.append("\n".join(texts))
 
-    section = doc.sections[0]
-    # Converte da EMU (English Metric Units) a cm (1 cm = 360000 EMU)
-    page_width_cm = section.page_width / 360000
-    page_height_cm = section.page_height / 360000
+    # Verifica TUTTE le sezioni per inconsistenze di formato
+    section_data = []
+    inconsistent_sections = []
     
-    margins = {
-        'top_cm': section.top_margin / 360000,
-        'bottom_cm': section.bottom_margin / 360000,
-        'left_cm': section.left_margin / 360000,
-        'right_cm': section.right_margin / 360000
-    }
+    for i, section in enumerate(doc.sections):
+        width_cm = section.page_width / 360000
+        height_cm = section.page_height / 360000
+        
+        section_info = {
+            'section_num': i + 1,
+            'width_cm': width_cm,
+            'height_cm': height_cm,
+            'margins': {
+                'top_cm': section.top_margin / 360000,
+                'bottom_cm': section.bottom_margin / 360000,
+                'left_cm': section.left_margin / 360000,
+                'right_cm': section.right_margin / 360000
+            }
+        }
+        section_data.append(section_info)
+    
+    # Usa la prima sezione come riferimento
+    first_section = section_data[0]
+    page_width_cm = first_section['width_cm']
+    page_height_cm = first_section['height_cm']
+    margins = first_section['margins']
+    
+    # Controlla inconsistenze tra sezioni (tolleranza di 0.1 cm)
+    for section_info in section_data[1:]:
+        if (abs(section_info['width_cm'] - page_width_cm) > 0.1 or 
+            abs(section_info['height_cm'] - page_height_cm) > 0.1):
+            inconsistent_sections.append({
+                'section': section_info['section_num'],
+                'size': f"{section_info['width_cm']:.1f}x{section_info['height_cm']:.1f}cm"
+            })
     
     # Controlla intestazioni (potenziale indice)
     headings = []
@@ -201,7 +225,11 @@ def extract_docx_properties(file_content: bytes) -> Dict[str, Any]:
         'headings': headings,
         'headers': headers,
         'footnotes': footnotes_texts,
-        'detailed_analysis': detailed_analysis
+        'detailed_analysis': detailed_analysis,
+        # Nuove informazioni per il controllo completo
+        'all_section_data': section_data,
+        'inconsistent_sections': inconsistent_sections,
+        'has_size_inconsistencies': len(inconsistent_sections) > 0
     }
 
 
@@ -430,7 +458,7 @@ def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
     }
 
 def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
-    """Extract properties from PDF file"""
+    """Extract properties from PDF file - now checks all pages for format consistency"""
     pdf_bytes_io = io.BytesIO(file_content)
     
     # Estrae proprietà di pagina di base con PyPDF2
@@ -440,57 +468,95 @@ def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
     if len(pdf_reader.pages) == 0:
         raise HTTPException(status_code=400, detail="PDF file has no pages")
     
-    # Ottiene dimensione pagina
-    first_page = pdf_reader.pages[0]
-    page_width_points = float(first_page.mediabox.width)
-    page_height_points = float(first_page.mediabox.height)
+    # Verifica dimensioni di TUTTE le pagine per inconsistenze
+    page_sizes = []
+    inconsistent_pages = []
     
-    # Converte punti in cm (1 punto = 0.0352778 cm)
-    page_width_cm = page_width_points * 0.0352778
-    page_height_cm = page_height_points * 0.0352778
+    for i, page in enumerate(pdf_reader.pages):
+        width_points = float(page.mediabox.width)
+        height_points = float(page.mediabox.height)
+        width_cm = width_points * 0.0352778
+        height_cm = height_points * 0.0352778
+        
+        page_sizes.append({
+            'page_num': i + 1,
+            'width_cm': width_cm,
+            'height_cm': height_cm,
+            'width_points': width_points,
+            'height_points': height_points
+        })
+    
+    # Usa la prima pagina come riferimento
+    first_page_size = page_sizes[0]
+    page_width_cm = first_page_size['width_cm']
+    page_height_cm = first_page_size['height_cm']
+    
+    # Controlla inconsistenze (tolleranza di 0.1 cm)
+    for page_size in page_sizes[1:]:
+        if (abs(page_size['width_cm'] - page_width_cm) > 0.1 or 
+            abs(page_size['height_cm'] - page_height_cm) > 0.1):
+            inconsistent_pages.append({
+                'page': page_size['page_num'],
+                'size': f"{page_size['width_cm']:.1f}x{page_size['height_cm']:.1f}cm"
+            })
     
     # Ottiene margini e intestazioni usando pdfplumber
     headings = []
     has_toc = False
     
     with pdfplumber.open(pdf_bytes_io) as pdf:
-        # Elabora solo le prime pagine per performance
-        pages_to_check = min(3, len(pdf.pages))
+        # Elabora TUTTE le pagine per analisi completa
+        total_pages = len(pdf.pages)
         
         # ---------- calcolo margini pagina ----------
-        # Origine coordinate PDF: (0,0) in basso-sinistra
-
-        # a) dimensioni carta (MediaBox)
-        media_w_pt = page_width_points
-        media_h_pt = page_height_points
-
-        # b) dimensioni area ritagliata (CropBox se presente, altrimenti MediaBox)
-        try:
-            # PyPDF2 restituisce CoordinateObject; converte a float
-            crop_left   = float(first_page.cropbox.lower_left[0])
-            crop_bottom = float(first_page.cropbox.lower_left[1])
-            crop_right  = float(first_page.cropbox.upper_right[0])
-            crop_top    = float(first_page.cropbox.upper_right[1])
-        except Exception:
-            # CropBox mancante → usa MediaBox (margini zero)
-            crop_left = crop_bottom = 0.0
-            crop_right  = media_w_pt
-            crop_top    = media_h_pt
-
-        # Margini in punti
-        left_margin_points   = crop_left
-        bottom_margin_points = crop_bottom
-        right_margin_points  = media_w_pt - crop_right
-        top_margin_points    = media_h_pt - crop_top
-
-        # Conversione in cm (1 pt = 0.0352778 cm)
-        left_margin_cm   = left_margin_points   * 0.0352778
-        bottom_margin_cm = bottom_margin_points * 0.0352778
-        right_margin_cm  = right_margin_points  * 0.0352778
-        top_margin_cm    = top_margin_points    * 0.0352778
+        # Verifica margini su più pagine (prime 5 o tutte se meno di 5)
+        pages_to_check_margins = min(5, total_pages)
+        margin_data = []
+        
+        for page_idx in range(pages_to_check_margins):
+            page_pdf2 = pdf_reader.pages[page_idx]
             
-        # Controlla intestazioni e indice
-        for i in range(pages_to_check):
+            # a) dimensioni carta (MediaBox)
+            media_w_pt = float(page_pdf2.mediabox.width)
+            media_h_pt = float(page_pdf2.mediabox.height)
+
+            # b) dimensioni area ritagliata (CropBox se presente, altrimenti MediaBox)
+            try:
+                # PyPDF2 restituisce CoordinateObject; converte a float
+                crop_left   = float(page_pdf2.cropbox.lower_left[0])
+                crop_bottom = float(page_pdf2.cropbox.lower_left[1])
+                crop_right  = float(page_pdf2.cropbox.upper_right[0])
+                crop_top    = float(page_pdf2.cropbox.upper_right[1])
+            except Exception:
+                # CropBox mancante → usa MediaBox (margini zero)
+                crop_left = crop_bottom = 0.0
+                crop_right  = media_w_pt
+                crop_top    = media_h_pt
+
+            # Margini in punti
+            left_margin_points   = crop_left
+            bottom_margin_points = crop_bottom
+            right_margin_points  = media_w_pt - crop_right
+            top_margin_points    = media_h_pt - crop_top
+
+            # Conversione in cm (1 pt = 0.0352778 cm)
+            margin_data.append({
+                'page': page_idx + 1,
+                'left_cm': left_margin_points * 0.0352778,
+                'bottom_cm': bottom_margin_points * 0.0352778,
+                'right_cm': right_margin_points * 0.0352778,
+                'top_cm': top_margin_points * 0.0352778
+            })
+        
+        # Usa i margini della prima pagina come principale
+        first_margins = margin_data[0]
+        left_margin_cm = first_margins['left_cm']
+        bottom_margin_cm = first_margins['bottom_cm']
+        right_margin_cm = first_margins['right_cm']
+        top_margin_cm = first_margins['top_cm']
+            
+        # Controlla intestazioni e indice su TUTTE le pagine
+        for i in range(total_pages):
             page = pdf.pages[i]
             text = page.extract_text()
             
@@ -504,7 +570,7 @@ def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
                         headings.append(line.strip())
                         
                 # Cerca parole chiave "Indice", "Contenuti", "Sommario"
-                if any(keyword in text for keyword in ["Table of Contents", "Contents", "Index", "TOC"]):
+                if any(keyword in text.lower() for keyword in ["table of contents", "contents", "index", "toc", "indice", "contenuti", "sommario"]):
                     has_toc = True
         
         # Assicura di avere almeno alcuni dati fittizi se non rilevati
@@ -541,6 +607,11 @@ def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
         'footnotes': footnotes,
         'detailed_analysis': detailed_analysis,
         'page_count': page_count,
+        # Nuove informazioni per il controllo completo
+        'all_page_sizes': page_sizes,
+        'inconsistent_pages': inconsistent_pages,
+        'margin_variations': margin_data,
+        'has_size_inconsistencies': len(inconsistent_pages) > 0
     }
 
 
@@ -614,6 +685,21 @@ def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalys
                 except ValueError:
                     font_size = 12.0  # Dimensione font di default se conversione fallisce
             
+            # Normalizza font_size - potrebbe essere in unità diverse
+            # Se è troppo grande, probabilmente è in unità diverse (es. EMU invece di pt)
+            if font_size > 100:  # Soglia ragionevole per font in punti
+                # Prova diverse conversioni di unità
+                if font_size > 36000:  # Probabilmente EMU (1 pt = 20 EMU circa)
+                    font_size = font_size / 20
+                elif font_size > 1000:  # Probabilmente twips (1 pt = 20 twips)
+                    font_size = font_size / 20
+                else:
+                    font_size = font_size / 10  # Altri fattori di scala
+            
+            # Assicurati che font_size sia ragionevole (tra 6 e 72 pt)
+            font_size = max(6.0, min(72.0, font_size))
+            font_size = round(font_size, 1)
+            
             # Estrae colori del testo (approssimativo in PDF)
             text_instances = page.search_for(font_name[:10] if len(font_name) > 10 else font_name)
             for inst in text_instances:
@@ -628,11 +714,14 @@ def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalys
             if font_name in fonts:
                 fonts[font_name].count += 1
                 if font_size not in fonts[font_name].sizes:
-                    fonts[font_name].sizes.append(round(font_size, 1))
+                    fonts[font_name].sizes.append(font_size)
+                # Aggiorna size_counts con la dimensione normalizzata
+                fonts[font_name].size_counts[font_size] = fonts[font_name].size_counts.get(font_size, 0) + 1
             else:
                 fonts[font_name] = FontInfo(
-                    sizes=[round(font_size, 1)],
-                    count=1
+                    sizes=[font_size],
+                    count=1,
+                    size_counts={font_size: 1}
                 )
     
     # Ottiene struttura documento/indice
@@ -731,6 +820,12 @@ def validate_document(
         pw_ok = abs(doc_props['page_size']['width_cm']  - spec.page_width_cm)  < 0.5
         ph_ok = abs(doc_props['page_size']['height_cm'] - spec.page_height_cm) < 0.5
         validations["page_size"] = pw_ok and ph_ok
+
+    # NUOVO: Controllo consistenza formato tra tutte le pagine/sezioni
+    format_consistency_valid = True
+    if doc_props.get('has_size_inconsistencies', False):
+        format_consistency_valid = False
+    validations["format_consistency"] = format_consistency_valid
 
     # Margini
     if services.get("layout_service"):
