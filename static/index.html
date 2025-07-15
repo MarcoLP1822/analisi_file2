@@ -11,6 +11,29 @@
     .json-box { white-space: pre-wrap; background:#f8f9fa; border:1px solid #ced4da; border-radius:.5rem;
                 padding:1rem; max-height:50vh; overflow:auto; }
     .table-fit td { vertical-align: middle; }
+    
+    .drop-area {
+      cursor: pointer;
+      transition: border-color 0.3s ease, background-color 0.3s ease;
+      min-height: 38px;
+      display: flex;
+      align-items: center;
+      position: relative;
+    }
+    
+    .drop-area:hover {
+      border-color: #86b7fe;
+    }
+    
+    .drop-area.drag-over {
+      border-color: #0d6efd !important;
+      background-color: #e7f3ff !important;
+    }
+    
+    .drop-content {
+      width: 100%;
+      pointer-events: none;
+    }
   </style>
 </head>
 <body>
@@ -34,9 +57,20 @@
           </div>
 
           <!-- FILE INPUT + BUTTON -->
-          <input class="form-control mb-3" type="file" id="fileInput"
-                 accept=".pdf,.docx,.odt,.doc" />
-          <button class="btn btn-success" id="validateBtn">Valida</button>
+          <div class="drop-area form-control mb-3" id="dropArea">
+            <input class="visually-hidden" type="file" id="fileInput"
+                   accept=".pdf,.docx,.odt,.doc" />
+            <div class="drop-content">
+              <span id="dropText">Scegli file o trascina qui</span>
+              <span id="fileName" class="text-muted" style="display: none;"></span>
+            </div>
+          </div>
+          <div class="d-flex gap-2 mb-3">
+            <button class="btn btn-success flex-grow-0" id="validateBtn">Valida</button>
+            <button class="btn btn-outline-danger" id="clearFileBtn" style="display: none;" title="Rimuovi file">Rimuovi file
+              <i class="bi bi-trash3"></i> ✕
+            </button>
+          </div>
           <div class="mt-3" id="validateSpinner" style="display:none">
             Validazione in corso…
           </div>

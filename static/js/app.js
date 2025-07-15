@@ -13,16 +13,16 @@ async function safeFetch(url, options = {}) {
 
 async function validaDocumento() {
   const orderText = q('orderText').value.trim();
-  const fileInput = q('fileInput');
+  const selectedFile = window.getSelectedFile ? window.getSelectedFile() : (q('fileInput').files[0] || null);
 
-  if (!orderText)            { alert('Incolla il testo dell’ordine'); return; }
-  if (!fileInput.files.length){ alert('Seleziona un file'); return; }
+  if (!orderText)     { alert('Incolla il testo dell\'ordine'); return; }
+  if (!selectedFile)  { alert('Seleziona un file'); return; }
 
   /*────────── richiesta ──────────*/
   const url = '/api/validate-order';
   const fd  = new FormData();
   fd.append('order_text', orderText);
-  fd.append('file', fileInput.files[0]);
+  fd.append('file', selectedFile);
 
   /*────────── UI reset ──────────*/
   q('validateSpinner').style.display = 'block';
@@ -120,12 +120,12 @@ async function validaDocumento() {
     const bodyTxt = data.is_valid
     ? `Ciao,
 
-    il documento “${data.document_name}” risulta conforme ai requisiti. In allegato trovi il report dettagliato.
+    il documento "${data.document_name}" risulta conforme ai requisiti. In allegato trovi il report dettagliato.
 
     Cordiali saluti`
     : `Ciao,
 
-    durante la verifica di “${data.document_name}” abbiamo riscontrato queste incongruenze:
+    durante la verifica di "${data.document_name}" abbiamo riscontrato queste incongruenze:
 
     ${failed || '—'}
 
@@ -158,11 +158,10 @@ async function validaDocumento() {
   }
 }
 
-
 async function scaricaReport(id) {
   try {
     const res = await safeFetch(`/api/validation-reports/${id}`, {
-      method: 'POST',                               // prima era GET implicito
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         include_charts: true,
@@ -184,15 +183,138 @@ async function scaricaReport(id) {
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  q('validateBtn').addEventListener('click', validaDocumento);
-  q('sendEmailBtn').addEventListener('click', sendEmail);
-});
+// Prevent default drag behaviors globally
+function preventDefaults(e) {
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+function setupDropArea() {
+  const dropArea = q('dropArea');
+  const fileInput = q('fileInput');
+  const dropText = q('dropText');
+  const fileName = q('fileName');
+  const clearFileBtn = q('clearFileBtn');
+  
+  // Variable to store the dropped file
+  let droppedFile = null;
+
+  // Prevent default behaviors for the entire window
+  window.addEventListener('dragenter', preventDefaults, false);
+  window.addEventListener('dragover', preventDefaults, false);
+  window.addEventListener('dragleave', preventDefaults, false);
+  window.addEventListener('drop', preventDefaults, false);
+
+  // Specific handlers for drop area
+  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+    dropArea.addEventListener(eventName, preventDefaults, false);
+  });
+
+  // Highlight drop area when item is dragged over it
+  ['dragenter', 'dragover'].forEach(eventName => {
+    dropArea.addEventListener(eventName, highlight, false);
+  });
+
+  ['dragleave', 'drop'].forEach(eventName => {
+    dropArea.addEventListener(eventName, unhighlight, false);
+  });
+
+  // Handle dropped files
+  dropArea.addEventListener('drop', handleDrop, false);
+  
+  // Handle click to open file dialog
+  dropArea.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    fileInput.click();
+  });
+  
+  // Handle file selection via input
+  fileInput.addEventListener('change', handleFileSelect);
+  
+  // Handle clear file button
+  clearFileBtn.addEventListener('click', clearFile);
+
+  function highlight(e) {
+    dropArea.classList.add('drag-over');
+  }
+
+  function unhighlight(e) {
+    dropArea.classList.remove('drag-over');
+  }
+
+  function handleDrop(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const dt = e.dataTransfer;
+    const files = dt.files;
+    
+    if (files.length > 0) {
+      const file = files[0];
+      // Check file type
+      const acceptedTypes = ['.pdf', '.docx', '.odt', '.doc'];
+      const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+      
+      if (acceptedTypes.includes(fileExtension)) {
+        droppedFile = file;
+        // Try to update the file input as well
+        try {
+          const dataTransfer = new DataTransfer();
+          dataTransfer.items.add(file);
+          fileInput.files = dataTransfer.files;
+        } catch (e) {
+          // Fallback if DataTransfer is not supported
+          console.log('DataTransfer not supported, using droppedFile variable');
+        }
+        updateFileDisplay(file);
+      } else {
+        alert('Tipo di file non supportato. Scegli un file PDF, DOCX, ODT o DOC.');
+      }
+    }
+  }
+  
+  function handleFileSelect(e) {
+    if (e.target.files.length > 0) {
+      droppedFile = null; // Reset dropped file when using file input
+      updateFileDisplay(e.target.files[0]);
+    }
+  }
+  
+  function updateFileDisplay(file) {
+    dropText.style.display = 'none';
+    fileName.style.display = 'block';
+    fileName.textContent = file.name;
+    clearFileBtn.style.display = 'block';
+  }
+  
+  function clearFile() {
+    // Reset all file-related elements
+    droppedFile = null;
+    fileInput.value = '';
+    
+    // Reset display
+    dropText.style.display = 'block';
+    fileName.style.display = 'none';
+    fileName.textContent = '';
+    clearFileBtn.style.display = 'none';
+    
+    // Reset any validation results
+    q('fileInfoCard').style.display = 'none';
+    q('emailCard').style.display = 'none';
+    q('resultCard').style.display = 'none';
+  }
+  
+  // Make the getSelectedFile function available globally
+  window.getSelectedFile = function() {
+    return droppedFile || (fileInput.files.length > 0 ? fileInput.files[0] : null);
+  };
+}
 
 async function sendEmail() {
   const to    = q('clientEmail').value.trim();
   const body  = q('emailBody').value.trim();
-  const valId = q('downloadReportBtn').dataset.valId;   // vedrai sotto
+  const valId = q('downloadReportBtn').dataset.valId;
 
   q('emailMsg').className = ''; q('emailMsg').textContent = '';
 
@@ -214,75 +336,10 @@ async function sendEmail() {
   }
 }
 
-
-/******************** TEMPLATE E-MAIL *************************/
-/*function tplRow(tpl) {
-  const tr = document.createElement('tr');
-  tr.innerHTML = `
-    <td>${tpl.subject}</td>
-    <td class="text-end">
-      <button data-action="edit-tpl" data-id="${tpl.id}" class="btn btn-sm btn-primary me-2">Modifica</button>
-      <button data-action="delete-tpl" data-id="${tpl.id}" class="btn btn-sm btn-danger">Elimina</button>
-    </td>`;
-  return tr;
-}
-
-async function fetchTpls() {
-  const tbody = q('tplTable');
-  tbody.textContent = '';
-  try {
-    const res = await safeFetch('/api/email-templates');
-    const tpls = await res.json();
-    q('noTpl').style.display = tpls.length ? 'none' : 'block';
-    tpls.forEach(tpl => tbody.appendChild(tplRow(tpl)));
-  } catch {
-    q('noTpl').style.display = 'block';
-  }
-}
-
-function openTplModal(mode, tpl = null) {
-  q('tplForm').reset();
-  q('tplMsg').textContent = '';
-  q('tplId').value = tpl ? tpl.id : '';
-  q('tplModalTitle').textContent = mode === 'new' ? 'Nuovo template' : 'Modifica template';
-  if (tpl) {
-    q('tplSubject').value = tpl.subject;
-    q('tplBody').value = tpl.body;
-  }
-  const modal = bootstrap.Modal.getOrCreateInstance(q('tplModal'));
-  modal.show();
-}
-
-async function saveTpl(e) {
-  e.preventDefault();
-  const id = q('tplId').value;
-  const url = id ? `/api/email-templates/${id}` : '/api/email-templates';
-  const method = id ? 'PUT' : 'POST';
-  const body = {
-    subject: q('tplSubject').value,
-    body: q('tplBody').value
-  };
-  try {
-    await safeFetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-    bootstrap.Modal.getInstance(q('tplModal')).hide();
-    await fetchTpls();
-  } catch (err) {
-    q('tplMsg').textContent = err.message;
-    q('tplMsg').className = 'text-danger me-auto';
-  }
-}
-
-async function deleteTpl(id) {
-  if (!confirm('Cancellare il template?')) return;
-  try {
-    await safeFetch(`/api/email-templates/${id}`, { method: 'DELETE' });
-    await fetchTpls();
-  } catch {
-    alert('Errore nella cancellazione');
-  }
-}
-*/
+document.addEventListener('DOMContentLoaded', () => {
+  q('validateBtn').addEventListener('click', validaDocumento);
+  q('sendEmailBtn').addEventListener('click', sendEmail);
+  
+  // Setup drag and drop functionality
+  setupDropArea();
+});
