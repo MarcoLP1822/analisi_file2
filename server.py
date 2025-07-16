@@ -459,270 +459,206 @@ def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
 
 def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
     """
-    Estrae proprietà da un PDF basandosi sulla TrimBox.
-    Fallback: CropBox → MediaBox.
-    Ritorna:
-        {
-            'page_size': {width_cm, height_cm},
-            'margins':   {top_cm, bottom_cm, left_cm, right_cm},
-            'has_toc': bool,
-            'headings': [...],
-            'headers':  [...],
-            'footnotes': [...],
-            'detailed_analysis': DetailedDocumentAnalysis,
-            'page_count': int,
-            # diagnostica
-            'all_page_boxes': [...],
-            'inconsistent_pages': [...],
-            'has_size_inconsistencies': bool
-        }
+    Estrae le proprietà di un PDF usando la TrimBox.
+    • Verifica coerenza formato (TrimBox) fra le pagine
+    • Calcola i margini (TrimBox vs MediaBox)
+    • Rileva la posizione del numero pagina (bottom-center / bottom-left / bottom-right)
     """
     import io, PyPDF2, pdfplumber
-
     CM_PER_PT = 0.0352778
 
     pdf_io = io.BytesIO(file_content)
     pdf_reader = PyPDF2.PdfReader(pdf_io)
-    page_count = len(pdf_reader.pages)
-    if page_count == 0:
+    if len(pdf_reader.pages) == 0:
         raise HTTPException(status_code=400, detail="PDF file has no pages")
 
-    def pick_box(page) -> PyPDF2.generic.RectangleObject:
-        """TrimBox → CropBox → MediaBox"""
+    # ---------- helper -------------------------------------------------
+    def pick_box(page: PyPDF2._page.PageObject):
+        """Restituisce TrimBox, altrimenti CropBox, altrimenti MediaBox."""
         for attr in ("trimbox", "cropbox", "mediabox"):
             box = getattr(page, attr, None)
             if box is not None:
                 return box
-        return page.mediabox  # extrema ratio (non dovrebbe servire)
+        return page.mediabox  # extrema-ratio
 
-    # ---- dimensioni & consistenza formato -------------------------
-    page_boxes = []
-    inconsistent_pages = []
-
+    # ---------- formato pagina & coerenza ------------------------------
+    page_boxes, inconsistent_pages = [], []
     for idx, pg in enumerate(pdf_reader.pages):
         box = pick_box(pg)
-        width_pt  = float(box.width)
-        height_pt = float(box.height)
-        width_cm  = width_pt  * CM_PER_PT
-        height_cm = height_pt * CM_PER_PT
+        w_pt, h_pt = float(box.width), float(box.height)
+        page_boxes.append(
+            {"page": idx + 1, "width_cm": w_pt*CM_PER_PT, "height_cm": h_pt*CM_PER_PT}
+        )
 
-        page_boxes.append({
-            "page": idx + 1,
-            "width_cm":  width_cm,
-            "height_cm": height_cm,
-            "source_box": type(box).__name__,  # RectangleObject ma utile in debug
-        })
-
-    ref_w = page_boxes[0]["width_cm"]
-    ref_h = page_boxes[0]["height_cm"]
+    ref_w, ref_h = page_boxes[0]["width_cm"], page_boxes[0]["height_cm"]
     for pb in page_boxes[1:]:
-        if abs(pb["width_cm"] - ref_w) > 0.1 or abs(pb["height_cm"] - ref_h) > 0.1:
+        if abs(pb["width_cm"]-ref_w) > .1 or abs(pb["height_cm"]-ref_h) > .1:
             inconsistent_pages.append(pb)
 
-    # ---- margini (da TrimBox rispetto a MediaBox) -----------------
-    first_page = pdf_reader.pages[0]
-    trim = pick_box(first_page)
-    media = first_page.mediabox
-
-    # distanza bordi (pt)
-    left_pt   = float(trim.lower_left[0]) - float(media.lower_left[0])
-    bottom_pt = float(trim.lower_left[1]) - float(media.lower_left[1])
-    right_pt  = float(media.upper_right[0]) - float(trim.upper_right[0])
-    top_pt    = float(media.upper_right[1]) - float(trim.upper_right[1])
-
+    # ---------- margini (TrimBox vs MediaBox) --------------------------
+    first_pg = pdf_reader.pages[0]
+    trim, media = pick_box(first_pg), first_pg.mediabox
     margins = {
-        "top_cm":    top_pt    * CM_PER_PT,
-        "bottom_cm": bottom_pt * CM_PER_PT,
-        "left_cm":   left_pt   * CM_PER_PT,
-        "right_cm":  right_pt  * CM_PER_PT,
+        "top_cm":    (float(media.upper_right[1]) - float(trim.upper_right[1])) * CM_PER_PT,
+        "bottom_cm": (float(trim.lower_left[1])  - float(media.lower_left[1])) * CM_PER_PT,
+        "left_cm":   (float(trim.lower_left[0])  - float(media.lower_left[0])) * CM_PER_PT,
+        "right_cm":  (float(media.upper_right[0]) - float(trim.upper_right[0])) * CM_PER_PT,
     }
 
-    # ---- intestazioni / TOC euristico -----------------------------
-    headings = []
-    has_toc = False
-    headers = []
-    footnotes = []
+    # ---------- heading / TOC euristico + numero pagina ----------------
+    headings, headers, footnotes = [], [], []
+    page_num_positions = []  # ‘center’, ‘left’, ‘right’, ‘missing’
 
     with pdfplumber.open(pdf_io) as pdf:
-        total_pages = len(pdf.pages)
+        h_pt = pdf.pages[0].height
+        w_pt = pdf.pages[0].width
+        bottom_th = 56              # ~2 cm
 
-        # header / footer rapidi (prime 3 pagine)
-        for p in pdf.pages[:3]:
-            txt = p.extract_text() or ""
-            lines = txt.splitlines()
-            if lines:
+        for idx, p in enumerate(pdf.pages):
+            txt = (p.extract_text() or "").lower()
+            if any(k in txt for k in ("indice", "table of contents", "contents", "toc", "sommario")):
+                headings.append("TOC detected")
+
+            # header/footer veloci (prime 3 pagine)
+            if idx < 3 and txt:
+                lines = txt.splitlines()
                 headers.append(lines[0].strip())
                 footnotes.append(lines[-1].strip())
 
-        # TOC / headings su tutte le pagine
-        for p in pdf.pages:
-            txt = (p.extract_text() or "").lower()
-            if any(k in txt for k in ("indice", "table of contents", "contents", "toc", "sommario")):
-                has_toc = True
-            for ln in txt.splitlines():
-                if ln.strip().startswith(tuple(f"{n}." for n in range(1, 10))):
-                    headings.append(ln.strip())
+            # ---- rileva numero pagina --------------------------------
+            pos = "mancante"
+            for w in p.extract_words(keep_blank_chars=False, use_text_flow=True):
+                if w["text"].strip().isdigit() and int(w["text"]) == idx+1:
+                    if w["bottom"] < h_pt - bottom_th:   # non in footer
+                        continue
+                    cx = (w["x0"] + w["x1"]) / 2
+                    if abs(cx - w_pt/2) <= w_pt*0.15:
+                        pos = "centro"
+                    elif cx < w_pt*0.25:
+                        pos = "sinistra"
+                    elif cx > w_pt*0.75:
+                        pos = "destra"
+                    break
+            page_num_positions.append(pos)
 
-    # ---- analisi dettagliata --------------------------------------
+    # ---------- analisi dettagliata -----------------------------------
     detailed_analysis = extract_pdf_detailed_analysis(file_content)
 
     return {
-        "page_size": {
-            "width_cm":  ref_w,
-            "height_cm": ref_h,
-        },
+        "page_size": {"width_cm": ref_w, "height_cm": ref_h},
         "margins": margins,
-        "has_toc": has_toc or bool(headings),
+        "has_toc": bool(headings),
         "headings": headings,
         "headers": headers,
         "footnotes": footnotes,
         "detailed_analysis": detailed_analysis,
-        "page_count": page_count,
-        # diagnostica
-        "all_page_boxes": page_boxes,
+        "page_count": len(pdf_reader.pages),
+        # nuovi campi ↓
+        "page_num_positions": page_num_positions,
         "inconsistent_pages": inconsistent_pages,
         "has_size_inconsistencies": bool(inconsistent_pages),
     }
 
 
 def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalysis:
-    """Extract detailed analysis from PDF file"""
-    pdf_bytes_io = io.BytesIO(file_content)
-    pdf_doc = fitz.open(stream=pdf_bytes_io, filetype="pdf")
-    
-    # Analisi font
-    fonts = {}
+    """
+    Analisi PDF:
+    • raccoglie font, paragrafi, TOC, metadati
+    • rileva immagini e testo colorato
+    • calcola il numero di *pagine* che contengono elementi a colori
+      (colored_elements_count diventa pages_with_color)
+    """
+    import io, fitz  # PyMuPDF
+
+    pdf_io = io.BytesIO(file_content)
+    pdf_doc = fitz.open(stream=pdf_io, filetype="pdf")
+
+    fonts: dict[str, FontInfo] = {}
+    toc_structure: list[dict[str, str]] = []
     paragraph_count = 0
-    toc_structure = []
     image_count = 0
     total_image_size = 0
-    has_color_pages = False
+
+    color_pages: set[int] = set()
     has_color_text = False
-    colored_elements_count = 0
-    
-    # Estrae metadati
-    metadata = {}
-    if pdf_doc.metadata:
-        for key, value in pdf_doc.metadata.items():
-            if value and key not in ['format', 'encryption']:
-                metadata[key] = str(value)
-    
-    # Elabora ogni pagina
+
+    # -------- metadati ------------------------------------------------
+    metadata = {k: str(v) for k, v in pdf_doc.metadata.items() if v and k not in ("format", "encryption")}
+
+    # -------- scorre pagine ------------------------------------------
     for page_num, page in enumerate(pdf_doc):
-        # Conta paragrafi (approssimativo basato sui blocchi)
-        blocks = page.get_text("blocks")
-        paragraph_count += len(blocks)
-        
-        # Controlla se la pagina ha colori
-        pixmap = page.get_pixmap()
-        if pixmap.colorspace and pixmap.colorspace != fitz.csGRAY:
-            # Campiona alcuni pixel per controllare colori non in scala di grigi
-            for i in range(0, pixmap.width, pixmap.width // 10):
-                for j in range(0, pixmap.height, pixmap.height // 10):
-                    pixel = pixmap.pixel(i, j)
-                    # Controlla se i valori RGB differiscono (indica colore)
-                    if len(pixel) >= 3 and not (pixel[0] == pixel[1] == pixel[2]):
-                        has_color_pages = True
-                        colored_elements_count += 1
-                        break
-                if has_color_pages:
-                    break
-        
-        # Estrae immagini
-        image_list = page.get_images(full=True)
-        for img_index, img in enumerate(image_list):
-            image_count += 1
+        # paragrafi approssimati
+        paragraph_count += len(page.get_text("blocks"))
+
+        page_is_color = False  # flag locale
+
+        # immagini
+        for img in page.get_images(full=True):
+            xref = img[0]
             try:
-                xref = img[0]
                 base_image = pdf_doc.extract_image(xref)
                 if base_image:
+                    image_count += 1
                     total_image_size += len(base_image["image"])
-                    # Assumendo che le immagini possano avere colori
-                    has_color_pages = True
-                    colored_elements_count += 1
-            except:
+                    page_is_color = True
+            except Exception:
                 pass
-        
-        # Estrae font e controlla potenziale testo colorato
-        for font in page.get_fonts():
-            font_name = font[3]
-            font_size = font[1]
-            
-            # Controlla se font_size è una stringa e convertila a float se necessario
-            if isinstance(font_size, str):
-                try:
-                    font_size = float(font_size)
-                except ValueError:
-                    font_size = 12.0  # Dimensione font di default se conversione fallisce
-            
-            # Normalizza font_size - potrebbe essere in unità diverse
-            # Se è troppo grande, probabilmente è in unità diverse (es. EMU invece di pt)
-            if font_size > 100:  # Soglia ragionevole per font in punti
-                # Prova diverse conversioni di unità
-                if font_size > 36000:  # Probabilmente EMU (1 pt = 20 EMU circa)
-                    font_size = font_size / 20
-                elif font_size > 1000:  # Probabilmente twips (1 pt = 20 twips)
-                    font_size = font_size / 20
-                else:
-                    font_size = font_size / 10  # Altri fattori di scala
-            
-            # Assicurati che font_size sia ragionevole (tra 6 e 72 pt)
-            font_size = max(6.0, min(72.0, font_size))
-            font_size = round(font_size, 1)
-            
-            # Estrae colori del testo (approssimativo in PDF)
-            text_instances = page.search_for(font_name[:10] if len(font_name) > 10 else font_name)
-            for inst in text_instances:
-                # Prova a ottenere informazioni colore dalle porzioni di testo
-                spans = page.get_textpage().extract_spans()
-                for span in spans:
-                    if span["color"] and span["color"] != 0:  # Colore non nero
+
+        # pixel color check (mini-campionamento)
+        if not page_is_color:
+            pix = page.get_pixmap(samples=8, colorspace=fitz.csRGB)
+            for px in pix.samples:
+                r, g, b = px[0], px[1], px[2]
+                if r != g or g != b:  # non scala di grigi
+                    page_is_color = True
+                    break
+
+        # font & testo colorato
+        for span in page.get_text("dict")["blocks"]:
+            for l in span.get("lines", []):
+                for s in l.get("spans", []):
+                    font_name = s["font"]
+                    font_size = round(float(s["size"]), 1)
+
+                    # aggiorna font dict
+                    fi = fonts.setdefault(font_name, FontInfo(sizes=[], count=0, size_counts={}))
+                    fi.count += 1
+                    if font_size not in fi.sizes:
+                        fi.sizes.append(font_size)
+                    fi.size_counts[font_size] = fi.size_counts.get(font_size, 0) + 1
+
+                    # colore RGB
+                    if s["color"] not in (0, 0x000000):
                         has_color_text = True
-                        colored_elements_count += 1
-                        break
-            
-            if font_name in fonts:
-                fonts[font_name].count += 1
-                if font_size not in fonts[font_name].sizes:
-                    fonts[font_name].sizes.append(font_size)
-                # Aggiorna size_counts con la dimensione normalizzata
-                fonts[font_name].size_counts[font_size] = fonts[font_name].size_counts.get(font_size, 0) + 1
-            else:
-                fonts[font_name] = FontInfo(
-                    sizes=[font_size],
-                    count=1,
-                    size_counts={font_size: 1}
-                )
-    
-    # Ottiene struttura documento/indice
+                        page_is_color = True
+
+        if page_is_color:
+            color_pages.add(page_num)
+
+    # -------- TOC -----------------------------------------------------
     toc = pdf_doc.get_toc()
     if toc:
-        for t in toc:
-            level, title, _ = t
-            toc_structure.append({
-                "level": str(level),
-                "text": title
-            })
-    
-    # Crea ImageInfo
+        for level, title, _ in toc:
+            toc_structure.append({"level": str(level), "text": title})
+
+    # -------- immagini info ------------------------------------------
     image_info = None
-    if image_count > 0:
-        avg_size_kb = (total_image_size / image_count) / 1024
-        image_info = ImageInfo(count=image_count, avg_size_kb=round(avg_size_kb, 2))
-    
-    # Stima interlinea (molto approssimativo per PDF)
-    line_spacing = {"Default": 1.2}  # Stima interlinea di default
-    
+    if image_count:
+        image_info = ImageInfo(
+            count=image_count,
+            avg_size_kb=round((total_image_size / image_count) / 1024, 2),
+        )
+
     return DetailedDocumentAnalysis(
         fonts=fonts,
         images=image_info,
-        line_spacing=line_spacing,
+        line_spacing={"Default": 1.2},
         paragraph_count=paragraph_count,
         toc_structure=toc_structure,
         metadata=metadata,
-        has_color_pages=has_color_pages,
+        has_color_pages=bool(color_pages),
         has_color_text=has_color_text,
-        colored_elements_count=colored_elements_count
+        colored_elements_count=len(color_pages),  # = pagine con colore
     )
 
 
@@ -842,6 +778,11 @@ def validate_document(
         validations['min_page_count'] = doc_props.get('page_count', 0) >= spec.min_page_count
     else:
         validations['min_page_count'] = True
+
+    # --- numerazione pagine ------------------------------------------
+    page_nums = doc_props.get("page_num_positions", [])
+    page_number_valid = page_nums and all(p in ("center", "left", "right") for p in page_nums)
+    validations["page_numbers_position"] = page_number_valid
 
     # Aggiorna validità complessiva
     is_valid = all(validations.values())
@@ -979,7 +920,7 @@ def generate_validation_report(
 
     check_rows = [["Verifica", "Esito"]]
     for check, ok in validation_result.validations.items():
-        pretty = check.replace("_", " ").capitalize()
+        pretty = "Num. pagina (footer)" if check == "page_numbers_position" else check.replace("_", " ").capitalize()
         sign   = "✓" if ok else "✗"
         color  = GREEN if ok else RED
 

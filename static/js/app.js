@@ -59,6 +59,15 @@ async function validaDocumento() {
     /* intestazioni / piè di pagina */
     const intestazioni = Array.isArray(props.headers)   ? props.headers.length   : 0;
     const piedipagina  = Array.isArray(props.footnotes) ? props.footnotes.length : 0;
+    /* posizione numero di pagina */
+    const posArr = Array.isArray(props.page_num_positions) ? props.page_num_positions : [];
+    let posSintesi = '—';
+    if (posArr.length) {
+      const cnt = posArr.reduce((m, p) => (m[p] = (m[p] || 0) + 1, m), {});
+      posSintesi = Object.entries(cnt)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(' | ');
+    }
 
     /*────────── FONT: nome + dimensioni + occorrenze ──────────*/
     let fontLines = '  —';
@@ -106,6 +115,7 @@ async function validaDocumento() {
                                ' · R ' + f(mg.right_cm),
       'Intestazioni:         ' + tick(v.has_header) + intestazioni,
       'Piè di pagina:        ' + tick(v.has_footnotes) + piedipagina,
+      'Numerazione pagine:   ' + tick(v.page_numbers_position) + posSintesi,
       'TOC presente:         ' + tick(v.has_toc) + (props.has_toc ? 'Sì' : 'No'),
       '',
       'Font (nome e dimensioni):',
