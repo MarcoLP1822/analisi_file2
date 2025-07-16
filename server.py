@@ -92,7 +92,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
 ACCESS_TOKEN_EXPIRE_DELTA = settings.access_token_expires
 
 # Configurazione CORS (origini)
-origins = settings.ALLOWED_ORIGINS
+origins = settings.allowed_origins_list
 
 # Carica variabili d'ambiente e configura percorsi
 ROOT_DIR = Path(__file__).parent
@@ -458,160 +458,130 @@ def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
     }
 
 def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
-    """Extract properties from PDF file - now checks all pages for format consistency"""
-    pdf_bytes_io = io.BytesIO(file_content)
-    
-    # Estrae proprietà di pagina di base con PyPDF2
-    pdf_reader = PyPDF2.PdfReader(pdf_bytes_io)
-    page_count = len(pdf_reader.pages)
+    """
+    Estrae proprietà da un PDF basandosi sulla TrimBox.
+    Fallback: CropBox → MediaBox.
+    Ritorna:
+        {
+            'page_size': {width_cm, height_cm},
+            'margins':   {top_cm, bottom_cm, left_cm, right_cm},
+            'has_toc': bool,
+            'headings': [...],
+            'headers':  [...],
+            'footnotes': [...],
+            'detailed_analysis': DetailedDocumentAnalysis,
+            'page_count': int,
+            # diagnostica
+            'all_page_boxes': [...],
+            'inconsistent_pages': [...],
+            'has_size_inconsistencies': bool
+        }
+    """
+    import io, PyPDF2, pdfplumber
 
-    if len(pdf_reader.pages) == 0:
+    CM_PER_PT = 0.0352778
+
+    pdf_io = io.BytesIO(file_content)
+    pdf_reader = PyPDF2.PdfReader(pdf_io)
+    page_count = len(pdf_reader.pages)
+    if page_count == 0:
         raise HTTPException(status_code=400, detail="PDF file has no pages")
-    
-    # Verifica dimensioni di TUTTE le pagine per inconsistenze
-    page_sizes = []
+
+    def pick_box(page) -> PyPDF2.generic.RectangleObject:
+        """TrimBox → CropBox → MediaBox"""
+        for attr in ("trimbox", "cropbox", "mediabox"):
+            box = getattr(page, attr, None)
+            if box is not None:
+                return box
+        return page.mediabox  # extrema ratio (non dovrebbe servire)
+
+    # ---- dimensioni & consistenza formato -------------------------
+    page_boxes = []
     inconsistent_pages = []
-    
-    for i, page in enumerate(pdf_reader.pages):
-        width_points = float(page.mediabox.width)
-        height_points = float(page.mediabox.height)
-        width_cm = width_points * 0.0352778
-        height_cm = height_points * 0.0352778
-        
-        page_sizes.append({
-            'page_num': i + 1,
-            'width_cm': width_cm,
-            'height_cm': height_cm,
-            'width_points': width_points,
-            'height_points': height_points
+
+    for idx, pg in enumerate(pdf_reader.pages):
+        box = pick_box(pg)
+        width_pt  = float(box.width)
+        height_pt = float(box.height)
+        width_cm  = width_pt  * CM_PER_PT
+        height_cm = height_pt * CM_PER_PT
+
+        page_boxes.append({
+            "page": idx + 1,
+            "width_cm":  width_cm,
+            "height_cm": height_cm,
+            "source_box": type(box).__name__,  # RectangleObject ma utile in debug
         })
-    
-    # Usa la prima pagina come riferimento
-    first_page_size = page_sizes[0]
-    page_width_cm = first_page_size['width_cm']
-    page_height_cm = first_page_size['height_cm']
-    
-    # Controlla inconsistenze (tolleranza di 0.1 cm)
-    for page_size in page_sizes[1:]:
-        if (abs(page_size['width_cm'] - page_width_cm) > 0.1 or 
-            abs(page_size['height_cm'] - page_height_cm) > 0.1):
-            inconsistent_pages.append({
-                'page': page_size['page_num'],
-                'size': f"{page_size['width_cm']:.1f}x{page_size['height_cm']:.1f}cm"
-            })
-    
-    # Ottiene margini e intestazioni usando pdfplumber
+
+    ref_w = page_boxes[0]["width_cm"]
+    ref_h = page_boxes[0]["height_cm"]
+    for pb in page_boxes[1:]:
+        if abs(pb["width_cm"] - ref_w) > 0.1 or abs(pb["height_cm"] - ref_h) > 0.1:
+            inconsistent_pages.append(pb)
+
+    # ---- margini (da TrimBox rispetto a MediaBox) -----------------
+    first_page = pdf_reader.pages[0]
+    trim = pick_box(first_page)
+    media = first_page.mediabox
+
+    # distanza bordi (pt)
+    left_pt   = float(trim.lower_left[0]) - float(media.lower_left[0])
+    bottom_pt = float(trim.lower_left[1]) - float(media.lower_left[1])
+    right_pt  = float(media.upper_right[0]) - float(trim.upper_right[0])
+    top_pt    = float(media.upper_right[1]) - float(trim.upper_right[1])
+
+    margins = {
+        "top_cm":    top_pt    * CM_PER_PT,
+        "bottom_cm": bottom_pt * CM_PER_PT,
+        "left_cm":   left_pt   * CM_PER_PT,
+        "right_cm":  right_pt  * CM_PER_PT,
+    }
+
+    # ---- intestazioni / TOC euristico -----------------------------
     headings = []
     has_toc = False
-    
-    with pdfplumber.open(pdf_bytes_io) as pdf:
-        # Elabora TUTTE le pagine per analisi completa
-        total_pages = len(pdf.pages)
-        
-        # ---------- calcolo margini pagina ----------
-        # Verifica margini su più pagine (prime 5 o tutte se meno di 5)
-        pages_to_check_margins = min(5, total_pages)
-        margin_data = []
-        
-        for page_idx in range(pages_to_check_margins):
-            page_pdf2 = pdf_reader.pages[page_idx]
-            
-            # a) dimensioni carta (MediaBox)
-            media_w_pt = float(page_pdf2.mediabox.width)
-            media_h_pt = float(page_pdf2.mediabox.height)
-
-            # b) dimensioni area ritagliata (CropBox se presente, altrimenti MediaBox)
-            try:
-                # PyPDF2 restituisce CoordinateObject; converte a float
-                crop_left   = float(page_pdf2.cropbox.lower_left[0])
-                crop_bottom = float(page_pdf2.cropbox.lower_left[1])
-                crop_right  = float(page_pdf2.cropbox.upper_right[0])
-                crop_top    = float(page_pdf2.cropbox.upper_right[1])
-            except Exception:
-                # CropBox mancante → usa MediaBox (margini zero)
-                crop_left = crop_bottom = 0.0
-                crop_right  = media_w_pt
-                crop_top    = media_h_pt
-
-            # Margini in punti
-            left_margin_points   = crop_left
-            bottom_margin_points = crop_bottom
-            right_margin_points  = media_w_pt - crop_right
-            top_margin_points    = media_h_pt - crop_top
-
-            # Conversione in cm (1 pt = 0.0352778 cm)
-            margin_data.append({
-                'page': page_idx + 1,
-                'left_cm': left_margin_points * 0.0352778,
-                'bottom_cm': bottom_margin_points * 0.0352778,
-                'right_cm': right_margin_points * 0.0352778,
-                'top_cm': top_margin_points * 0.0352778
-            })
-        
-        # Usa i margini della prima pagina come principale
-        first_margins = margin_data[0]
-        left_margin_cm = first_margins['left_cm']
-        bottom_margin_cm = first_margins['bottom_cm']
-        right_margin_cm = first_margins['right_cm']
-        top_margin_cm = first_margins['top_cm']
-            
-        # Controlla intestazioni e indice su TUTTE le pagine
-        for i in range(total_pages):
-            page = pdf.pages[i]
-            text = page.extract_text()
-            
-            if text:
-                lines = text.split('\n')
-                
-                # Cerca potenziali intestazioni (sezioni numerate o testo grande)
-                for line in lines:
-                    # Euristica semplice: controlla sezioni numerate (es. "1. Introduzione", "2.1 Metodi")
-                    if any(line.strip().startswith(f"{i}.") for i in range(1, 10)) or len(line.strip()) < 60:
-                        headings.append(line.strip())
-                        
-                # Cerca parole chiave "Indice", "Contenuti", "Sommario"
-                if any(keyword in text.lower() for keyword in ["table of contents", "contents", "index", "toc", "indice", "contenuti", "sommario"]):
-                    has_toc = True
-        
-        # Assicura di avere almeno alcuni dati fittizi se non rilevati
-        if not headings and has_toc:
-            headings = ["[PDF contains a Table of Contents]"]
-    
-    # Extract detailed analysis
-    detailed_analysis = extract_pdf_detailed_analysis(file_content)
-
     headers = []
     footnotes = []
-    
-    with pdfplumber.open(pdf_bytes_io) as pdf:
-        for page in pdf.pages[:3]:  # analizza prime 3 pagine come esempio
-            text = page.extract_text()
-            if not text:
-                continue
-            lines = text.split('\n')
-            if len(lines) > 2:
+
+    with pdfplumber.open(pdf_io) as pdf:
+        total_pages = len(pdf.pages)
+
+        # header / footer rapidi (prime 3 pagine)
+        for p in pdf.pages[:3]:
+            txt = p.extract_text() or ""
+            lines = txt.splitlines()
+            if lines:
                 headers.append(lines[0].strip())
                 footnotes.append(lines[-1].strip())
 
+        # TOC / headings su tutte le pagine
+        for p in pdf.pages:
+            txt = (p.extract_text() or "").lower()
+            if any(k in txt for k in ("indice", "table of contents", "contents", "toc", "sommario")):
+                has_toc = True
+            for ln in txt.splitlines():
+                if ln.strip().startswith(tuple(f"{n}." for n in range(1, 10))):
+                    headings.append(ln.strip())
+
+    # ---- analisi dettagliata --------------------------------------
+    detailed_analysis = extract_pdf_detailed_analysis(file_content)
+
     return {
-        'page_size': {'width_cm': page_width_cm, 'height_cm': page_height_cm},
-        'margins': {
-            'top_cm': top_margin_cm,
-            'bottom_cm': bottom_margin_cm,
-            'left_cm': left_margin_cm,
-            'right_cm': right_margin_cm
+        "page_size": {
+            "width_cm":  ref_w,
+            "height_cm": ref_h,
         },
-        'has_toc': has_toc or len(headings) > 0,
-        'headings': headings,
-        'headers': headers,   
-        'footnotes': footnotes,
-        'detailed_analysis': detailed_analysis,
-        'page_count': page_count,
-        # Nuove informazioni per il controllo completo
-        'all_page_sizes': page_sizes,
-        'inconsistent_pages': inconsistent_pages,
-        'margin_variations': margin_data,
-        'has_size_inconsistencies': len(inconsistent_pages) > 0
+        "margins": margins,
+        "has_toc": has_toc or bool(headings),
+        "headings": headings,
+        "headers": headers,
+        "footnotes": footnotes,
+        "detailed_analysis": detailed_analysis,
+        "page_count": page_count,
+        # diagnostica
+        "all_page_boxes": page_boxes,
+        "inconsistent_pages": inconsistent_pages,
+        "has_size_inconsistencies": bool(inconsistent_pages),
     }
 
 
