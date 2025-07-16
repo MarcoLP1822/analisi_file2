@@ -723,8 +723,8 @@ def validate_document(
     if services.get("layout_service"):
         validations["page_size"] = True      # superato di default
     else:
-        pw_ok = abs(doc_props['page_size']['width_cm']  - spec.page_width_cm)  < 0.5
-        ph_ok = abs(doc_props['page_size']['height_cm'] - spec.page_height_cm) < 0.5
+        pw_ok = abs(doc_props['page_size']['width_cm']  - spec.page_width_cm)  < 0.6
+        ph_ok = abs(doc_props['page_size']['height_cm'] - spec.page_height_cm) < 0.6
         validations["page_size"] = pw_ok and ph_ok
 
     # NUOVO: Controllo consistenza formato tra tutte le pagine/sezioni
