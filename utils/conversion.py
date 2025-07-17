@@ -1,6 +1,11 @@
 # utils/conversion.py
-import subprocess, tempfile, pathlib, io
+import io
+import pathlib
+import subprocess
+import tempfile
+
 import PyPDF2
+
 
 # ------------------------------------------------------------------ #
 def convert_to_pdf_via_lo(src_bytes: bytes, ext: str) -> bytes:

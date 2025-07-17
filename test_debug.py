@@ -2,10 +2,10 @@
 """
 Test script per verificare il funzionamento dell'API Document Validator.
 """
-import requests
-import json
 import sys
-from pathlib import Path
+
+import requests
+
 
 def test_api_health(base_url="http://127.0.0.1:8000"):
     """Test dell'endpoint di health check"""

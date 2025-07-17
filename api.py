@@ -18,30 +18,31 @@ Flussi esposti (prefisso /api):
 Gli esiti di validazione vengono mantenuti in RAM tramite utils.local_store.
 """
 
+import logging
+import os
+from datetime import datetime
+
+import requests  # per catch HTTPError Zendesk
 from fastapi import (
     APIRouter,
-    UploadFile,
     File,
     Form,
     HTTPException,
-    Response,
-    status,
     Request,
+    Response,
+    UploadFile,
+    status,
 )
-from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
-from datetime import datetime
-import logging
-import os
-import requests                          # per catch HTTPError Zendesk
-from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, EmailStr
+from starlette.concurrency import run_in_threadpool
+
+from config import settings
+from models import DocumentSpec, ReportFormat, ValidationResult
+from utils.local_store import get_entry, save_result
 
 # utilità locali
 from utils.order_parser import parse_order
-from utils.local_store import save_result, get_entry
-from config import settings
-from models import DocumentSpec, ValidationResult, ReportFormat
 
 logger = logging.getLogger("document_validator")
 api_router = APIRouter(prefix="/api")
