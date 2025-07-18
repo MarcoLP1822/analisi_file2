@@ -3,15 +3,17 @@
 Mini-store in-memory: ora thread-safe.
 Se in futuro userai Redis o un DB potrai rimuovere il lock.
 """
-from typing import Dict, TypedDict
-from threading import Lock                    # 👈 nuovo
-from models import ValidationResult, DocumentSpec
+from threading import Lock  # 👈 nuovo
+from typing import TypedDict
+
+from models import DocumentSpec, ValidationResult
+
 
 class _Entry(TypedDict):
     result: ValidationResult
     spec:   DocumentSpec
 
-_storage: Dict[str, _Entry] = {}
+_storage: dict[str, _Entry] = {}
 _lock = Lock()                                # 👈 nuovo
 
 # --------------------------------------------------------------- #

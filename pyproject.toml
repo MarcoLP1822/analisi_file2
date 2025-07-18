@@ -1,0 +1,19 @@
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "PYI"]
+ignore = [
+  "E402",  # import non in testa
+  "E501",  # line-length >100
+  "E701",  # più statement sulla stessa riga
+  "E741",  # variabile 1-carattere ambigua
+  "SIM102",# if annidati
+  "B008",  # chiamata funzione in default arg
+  "B904",  # raise senza 'from'
+  "UP022", # PIPE vs capture_output
+]

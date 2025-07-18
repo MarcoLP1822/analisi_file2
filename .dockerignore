@@ -1,0 +1,14 @@
+# Cache & virtualenv
+.venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Git
+.git/
+.gitignore
+
+# Altri artefatti
+*.log
+*.coverage

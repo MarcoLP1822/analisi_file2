@@ -1,8 +1,10 @@
 # models.py  – versione ripulita (solo le due classi interessate)
 import uuid
 from datetime import datetime
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, EmailStr
+from typing import Any
+
+from pydantic import BaseModel, Field
+
 
 class DocumentSpec(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -28,7 +30,7 @@ class DocumentSpec(BaseModel):
 
     # Metadati
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    created_by: Optional[str] = None
+    created_by: str | None = None
 
 
 class DocumentSpecCreate(BaseModel):
@@ -52,45 +54,45 @@ class DocumentSpecCreate(BaseModel):
     min_page_count: int = 0
 
 class FontInfo(BaseModel):
-    sizes: List[float]
+    sizes: list[float]
     count: int
     # mappa «dimensione pt» → occorrenze
-    size_counts: Dict[float, int] = {}
+    size_counts: dict[float, int] = {}
 
 class ImageInfo(BaseModel):
     count: int
     avg_size_kb: float
 
 class DetailedDocumentAnalysis(BaseModel):
-    fonts: Dict[str, FontInfo] = {}
-    images: Optional[ImageInfo] = None
-    line_spacing: Dict[str, float] = {}
+    fonts: dict[str, FontInfo] = {}
+    images: ImageInfo | None = None
+    line_spacing: dict[str, float] = {}
     paragraph_count: int = 0
-    toc_structure: List[Dict[str, str]] = []
-    metadata: Dict[str, str] = {}
+    toc_structure: list[dict[str, str]] = []
+    metadata: dict[str, str] = {}
     has_color_pages: bool = False
     has_color_text: bool = False
     colored_elements_count: int = 0
 
 class ValidationResult(BaseModel):
-    id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()))
+    id: str | None = Field(default_factory=lambda: str(uuid.uuid4()))
     document_name: str
     spec_id: str
     spec_name: str
     file_format: str
-    validations: Dict[str, bool]
+    validations: dict[str, bool]
     is_valid: bool
-    detailed_analysis: Optional[DetailedDocumentAnalysis] = None
-    user_id: Optional[str] = None
+    detailed_analysis: DetailedDocumentAnalysis | None = None
+    user_id: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    raw_props: Optional[Dict[str, Any]] = None
+    raw_props: dict[str, Any] | None = None
 
 class EmailTemplate(BaseModel):
-    id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()))
+    id: str | None = Field(default_factory=lambda: str(uuid.uuid4()))
     subject: str
     body: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    created_by: Optional[str] = None
+    created_by: str | None = None
 
 class EmailTemplateCreate(BaseModel):
     subject: str
@@ -106,4 +108,4 @@ class Token(BaseModel):
     token_type: str
 
 class TokenData(BaseModel):
-    username: Optional[str] = None
+    username: str | None = None

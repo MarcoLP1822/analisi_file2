@@ -1,0 +1,30 @@
+version: "3.9"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: document-validator
+    ports:
+      - "8000:8000"
+    environment:
+      # se vorrai cambiare porta/host ti basta modificare qui
+      - APP_HOST=0.0.0.0
+      - PORT=8000
+    volumes:
+      # monta il codice sorgente per hot-reload durante lo sviluppo
+      - .:/app
+    command: >
+      sh -c "
+        pip install --quiet --upgrade watchdog[watchmedo] &&
+        watchmedo auto-restart --directory=/app --pattern=*.py --recursive --
+        python main.py
+      "
+
+    # opzionale: limita le risorse per non saturare il laptop
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M

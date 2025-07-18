@@ -4,80 +4,52 @@ import json
 import logging
 import os
 import sys
-import tempfile
-import requests, base64
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Any, Optional, Union
+from typing import Any
 
-# Importazioni librerie di terze parti
-from odf.text import H as OdtHeading
+import fitz  # PyMuPDF
+import pdfplumber
+
+# Librerie per elaborazione documenti
+import PyPDF2
+import requests
 from docx import Document as DocxDocument
-from docx.oxml.ns import qn
-from docx.shared import Inches, Cm
 from dotenv import load_dotenv
 from fastapi import (
     FastAPI,
-    APIRouter,
-    UploadFile,
-    File,
-    Form,
     HTTPException,
-    Response,
-    Depends,
+    Request,
     status,
-    Request
 )
-from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordBearer
 from fastapi.staticfiles import StaticFiles
-from jose import JWTError, jwt
 from odf.opendocument import load as load_odt
 from odf.style import PageLayoutProperties
+
+# Importazioni librerie di terze parti
 from odf.text import H as OdtHeading
 from passlib.context import CryptContext
-from pydantic import BaseModel, Field
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
-from reportlab.pdfgen import canvas
-from reportlab.platypus import (
-    SimpleDocTemplate,
-    Table,
-    TableStyle,
-    Paragraph,
-    Spacer,
-    Image
-)
+from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table
 
 # Importazioni locali
 from config import Settings
-from utils.conversion import convert_to_pdf_via_lo, extract_pdf_page_count
-from utils.order_parser import parse_order
 from models import (
-    TokenData,
-    FontInfo,
-    ImageInfo,
     DetailedDocumentAnalysis,
     DocumentSpec,
-    DocumentSpecCreate,
+    FontInfo,
+    ImageInfo,
+    ReportFormat,
     ValidationResult,
-    EmailTemplate,
-    EmailTemplateCreate,
-    ReportFormat
 )
-
-# Librerie per elaborazione documenti
-import PyPDF2
-import pdfplumber
-import fitz  # PyMuPDF
-from pdfminer.high_level import extract_text
 
 # Inizializzazione delle impostazioni
 settings = Settings()
@@ -142,7 +114,7 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def extract_docx_properties(file_content: bytes) -> Dict[str, Any]:
+def extract_docx_properties(file_content: bytes) -> dict[str, Any]:
     """Estrae proprietà da file DOCX"""
     doc = DocxDocument(io.BytesIO(file_content))
     # --- ESTRAZIONE HEADER ---
@@ -349,7 +321,7 @@ def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysi
     )
 
 
-def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
+def extract_odt_properties(file_content: bytes) -> dict[str, Any]:
     """Extract properties from ODT file"""
     doc = load_odt(io.BytesIO(file_content))
 
@@ -406,7 +378,7 @@ def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
     
     # Controlla immagini ed elementi colorati
     from odf.draw import Image as OdtImage
-    from odf.style import TextProperties, GraphicProperties
+    from odf.style import GraphicProperties, TextProperties
     
     image_count = len(doc.getElementsByType(OdtImage))
     has_color_pages = image_count > 0  # Assume che le immagini abbiano colori
@@ -457,14 +429,15 @@ def extract_odt_properties(file_content: bytes) -> Dict[str, Any]:
         'detailed_analysis': detailed_analysis
     }
 
-def extract_pdf_properties(file_content: bytes) -> Dict[str, Any]:
+def extract_pdf_properties(file_content: bytes) -> dict[str, Any]:
     """
     Estrae le proprietà di un PDF usando la TrimBox.
     • Verifica coerenza formato (TrimBox) fra le pagine
     • Calcola i margini (TrimBox vs MediaBox)
     • Rileva la posizione del numero pagina (bottom-center / bottom-left / bottom-right)
     """
-    import io, PyPDF2, pdfplumber
+    import io
+
     CM_PER_PT = 0.0352778
 
     pdf_io = io.BytesIO(file_content)
@@ -568,7 +541,8 @@ def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalys
     • calcola il numero di *pagine* che contengono elementi a colori
       (colored_elements_count diventa pages_with_color)
     """
-    import io, fitz  # PyMuPDF
+    import io
+
 
     pdf_io = io.BytesIO(file_content)
     pdf_doc = fitz.open(stream=pdf_io, filetype="pdf")
@@ -661,137 +635,6 @@ def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalys
         colored_elements_count=len(color_pages),  # = pagine con colore
     )
 
-
-# ------------------------------------------------------------------ #
-def process_document(file_content: bytes, file_format: str) -> Dict[str, Any]:
-    """
-    Estrae le proprietà del documento e, dove serve, calcola anche page_count
-    convertendo prima in PDF con LibreOffice. Supporta doc, docx, odt e pdf.
-    """
-    fmt = file_format.lower()
-
-    # ---------- .DOC binario ----------------------------------------
-    if fmt == "doc":
-        # convertiamo direttamente a PDF e usiamo le proprietà PDF
-        pdf_bytes = convert_to_pdf_via_lo(file_content, "doc")
-        pdf_props = extract_pdf_properties(pdf_bytes)
-        return pdf_props                       # page_count già incluso
-
-    # ---------- .DOCX ----------------------------------------------
-    if fmt == "docx":
-        doc_props = extract_docx_properties(file_content)
-        # conta pagine via PDF
-        pdf_bytes = convert_to_pdf_via_lo(file_content, "docx")
-        doc_props["page_count"] = extract_pdf_page_count(pdf_bytes)
-        return doc_props
-
-    # ---------- .ODT -----------------------------------------------
-    if fmt == "odt":
-        odt_props = extract_odt_properties(file_content)
-        pdf_bytes = convert_to_pdf_via_lo(file_content, "odt")
-        odt_props["page_count"] = extract_pdf_page_count(pdf_bytes)
-        return odt_props
-
-    # ---------- .PDF ------------------------------------------------
-    if fmt == "pdf":
-        pdf_props = extract_pdf_properties(file_content)
-        # extract_pdf_properties ora inserisce page_count
-        return pdf_props
-
-    # ---------- formato non supportato -----------------------------
-    raise HTTPException(status_code=400, detail=f"Unsupported file format: {file_format}")
-# ------------------------------------------------------------------ #
-
-# ------------------------------------------------------------------ #
-def validate_document(
-    doc_props: Dict[str, Any],
-    spec: DocumentSpec,
-    services: Optional[Dict[str, bool]] = None
-) -> Dict[str, Any]:
-    """
-    Restituisce:
-    {
-        'validations': { check_name: bool, ... },
-        'is_valid': bool
-    }
-    Alcuni check possono essere disattivati in base ai servizi acquistati.
-    """
-    services = services or {}
-    validations: Dict[str, bool] = {}
-
-    # Dimensione pagina
-    if services.get("layout_service"):
-        validations["page_size"] = True      # superato di default
-    else:
-        pw_ok = abs(doc_props['page_size']['width_cm']  - spec.page_width_cm)  < 0.6
-        ph_ok = abs(doc_props['page_size']['height_cm'] - spec.page_height_cm) < 0.6
-        validations["page_size"] = pw_ok and ph_ok
-
-    # NUOVO: Controllo consistenza formato tra tutte le pagine/sezioni
-    format_consistency_valid = True
-    if doc_props.get('has_size_inconsistencies', False):
-        format_consistency_valid = False
-    validations["format_consistency"] = format_consistency_valid
-
-    # Margini
-    if services.get("layout_service"):
-        # Se c'è il servizio impaginazione saltiamo i margini
-        validations["margins"] = True
-    else:
-        margins = doc_props["margins"]
-        top_ok    = abs(margins["top_cm"]    - spec.top_margin_cm)    < 0.5
-        bottom_ok = abs(margins["bottom_cm"] - spec.bottom_margin_cm) < 0.5
-        left_ok   = abs(margins["left_cm"]   - spec.left_margin_cm)   < 0.5
-        right_ok  = abs(margins["right_cm"]  - spec.right_margin_cm)  < 0.5
-        validations["margins"] = top_ok and bottom_ok and left_ok and right_ok
-    
-    # Valida indice se richiesto
-    toc_valid = True
-    if spec.requires_toc:
-        toc_valid = doc_props['has_toc']
-    validations['has_toc'] = toc_valid
-    
-    # Valida assenza pagine a colori se richiesto
-    color_pages_valid = True
-    if spec.no_color_pages and 'detailed_analysis' in doc_props:
-        color_pages_valid = not doc_props['detailed_analysis'].has_color_pages and not doc_props['detailed_analysis'].has_color_text
-    validations['no_color_pages'] = color_pages_valid
-    
-    # Valida assenza immagini se richiesto
-    no_images_valid = True
-    if spec.no_images and 'detailed_analysis' in doc_props:
-        no_images_valid = not doc_props['detailed_analysis'].images or doc_props['detailed_analysis'].images.count == 0
-    validations['no_images'] = no_images_valid
-    
-    header_valid = True
-    if hasattr(spec, 'requires_header') and spec.requires_header:
-        header_valid = len(doc_props.get('headers', [])) > 0
-    validations['has_header'] = header_valid
-    
-    footnotes_valid = True
-    if hasattr(spec, 'requires_footnotes') and spec.requires_footnotes:
-        footnotes_valid = len(doc_props.get('footnotes', [])) > 0
-    validations['has_footnotes'] = footnotes_valid
-    
-    # --- pagine minime --------------------------------------------
-    if spec.min_page_count > 0:
-        validations['min_page_count'] = doc_props.get('page_count', 0) >= spec.min_page_count
-    else:
-        validations['min_page_count'] = True
-
-    # --- numerazione pagine ------------------------------------------
-    page_nums = doc_props.get("page_num_positions", [])
-    page_number_valid = page_nums and all(p in ("center", "left", "right") for p in page_nums)
-    validations["page_numbers_position"] = page_number_valid
-
-    # Aggiorna validità complessiva
-    is_valid = all(validations.values())
-    
-    return {
-        'validations': validations,
-        'is_valid': is_valid
-    }
-
 # ──────────────────────────────────────────────────────────────────
 #  GENERATE PDF – versione “client-friendly”
 # ──────────────────────────────────────────────────────────────────
@@ -800,22 +643,14 @@ def generate_validation_report(
     spec: DocumentSpec,
     report_format: ReportFormat,
 ) -> bytes:
-    from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER, TA_LEFT
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import cm
+    import datetime
+    import io
+    import pathlib
+
     from reportlab.platypus import (
-        SimpleDocTemplate,
-        Table,
-        TableStyle,
-        Paragraph,
-        Spacer,
-        Image,
-        PageBreak,
         HRFlowable,
+        PageBreak,
     )
-    import io, datetime, pathlib
 
     # ── palette aziendale ─────────────────────────────────────────
     GREEN   = colors.HexColor("#198754")
@@ -1086,10 +921,13 @@ def send_ticket_to_zendesk(
 
 
 from api import api_router as api_routes
+
 app.include_router(api_routes)
 
 # =====  FILE STATICI & FRONTEND  =====
-import sys, pathlib
+import pathlib
+import sys
+
 if getattr(sys, 'frozen', False):
     BASE_DIR = pathlib.Path(sys._MEIPASS)  # cartella temporanea del bundle
 else:

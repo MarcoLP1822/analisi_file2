@@ -5,15 +5,21 @@ Parsing del testo dell’ordine:
 • estrae il formato finale (larghezza × altezza in cm)
 """
 from __future__ import annotations
+
 import re
 import unicodedata
-from typing import Dict
+from typing import TypedDict
 
 # Mappa «parola chiave» ➔ nome interno del servizio
-SERVICES_KEYWORDS: Dict[str, str] = {
+SERVICES_KEYWORDS: dict[str, str] = {
     r"impaginazione": "layout_service",
     # aggiungi altre keyword → servizio qui
 }
+
+# ---------- NEW: tipo restituito -----------------------------------
+class ParsedOrder(TypedDict):
+    final_format_cm: tuple[float, float]
+    services: dict[str, bool]
 
 # ------------------------------------------------------------------ #
 def _normalize(text: str) -> str:
@@ -28,19 +34,19 @@ def _normalize(text: str) -> str:
     return text.strip()
 
 # ------------------------------------------------------------------ #
-def parse_order(text: str) -> dict:
+def parse_order(text: str) -> ParsedOrder:
     """
-    Ritorna un dizionario:
-    {
-        "final_format_cm": (larghezza_cm, altezza_cm),
-        "services": { nome_servizio: bool, ... }
-    }
+    Ritorna:
+        {
+            "final_format_cm": (larghezza_cm, altezza_cm),
+            "services": { nome_servizio: bool, ... }
+        }
     Lancia ValueError se il formato non viene trovato.
     """
     text_norm = _normalize(text)
 
     # 1) servizi -----------------------------------------------------
-    services = {v: False for v in SERVICES_KEYWORDS.values()}
+    services: dict[str, bool] = {v: False for v in SERVICES_KEYWORDS.values()}
     for pattern, key in SERVICES_KEYWORDS.items():
         if re.search(pattern, text_norm, re.I):
             services[key] = True
