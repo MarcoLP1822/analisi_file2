@@ -9,11 +9,11 @@ quote-style = "single"
 select = ["E", "F", "I", "B", "UP", "SIM", "PYI"]
 ignore = [
   "E402",  # import non in testa
-  "E501",  # righe > 100 caratteri
-  "E701",  # più istruzioni su una riga
-  "E741",  # nome variabile ambiguo
-  "SIM102",# if annidati (semplificazione)
-  "B008",  # chiamate nei default arg
-  "B904",  # raise from ...
-  "UP022", # capture_output (miglioria futura)
+  "E501",  # line-length >100
+  "E701",  # più statement sulla stessa riga
+  "E741",  # variabile 1-carattere ambigua
+  "SIM102",# if annidati
+  "B008",  # chiamata funzione in default arg
+  "B904",  # raise senza 'from'
+  "UP022", # PIPE vs capture_output
 ]
