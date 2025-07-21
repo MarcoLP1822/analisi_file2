@@ -66,28 +66,30 @@ def validate_document(
     services: dict[str, bool] | None = None,
 ) -> dict[str, Any]:
     """
-    Restituisce:
+    Ritorna:
     {
-        'validations': { check_name: bool, ... },
-        'is_valid': bool
+        "validations": {check_name: bool, ...},
+        "is_valid": bool,
     }
-    Alcuni check possono essere disattivati in base ai servizi acquistati.
+    Alcuni check vengono disattivati se presenti servizi acquistati.
     """
     services = services or {}
     validations: dict[str, bool] = {}
 
-    # ─── Dimensione pagina ─────────────────────────────────────────
+    # ─── Dimensioni pagina ──────────────────────────────────────────
     if services.get("layout_service"):
         validations["page_size"] = True
     else:
-        pw_ok = abs(doc_props["page_size"]["width_cm"] - spec.page_width_cm) < 0.6
+        pw_ok = abs(doc_props["page_size"]["width_cm"]  - spec.page_width_cm)  < 0.6
         ph_ok = abs(doc_props["page_size"]["height_cm"] - spec.page_height_cm) < 0.6
         validations["page_size"] = pw_ok and ph_ok
 
-    # ─── Coerenza formato fra pagine/sezioni ───────────────────────
-    validations["format_consistency"] = not doc_props.get("has_size_inconsistencies", False)
+    # ─── Coerenza formato fra pagine/sezioni ────────────────────────
+    validations["format_consistency"] = not doc_props.get(
+        "has_size_inconsistencies", False
+    )
 
-    # ─── Margini ───────────────────────────────────────────────────
+    # ─── Margini ────────────────────────────────────────────────────
     if services.get("layout_service"):
         validations["margins"] = True
     else:
@@ -98,31 +100,38 @@ def validate_document(
         right_ok  = abs(m["right_cm"]  - spec.right_margin_cm)  < 0.5
         validations["margins"] = top_ok and bottom_ok and left_ok and right_ok
 
-    # ─── TOC, colori, immagini, header, footnote ───────────────────
-    validations["has_toc"]          = not spec.requires_toc or doc_props["has_toc"]
-    validations["no_color_pages"]   = (
-        not spec.no_color_pages
-        or not doc_props.get("detailed_analysis", {}).has_color_pages
+    # ─── TOC, colori, immagini, header, footnote ────────────────────
+    validations["has_toc"]        = not spec.requires_toc or doc_props["has_toc"]
+    da = doc_props.get("detailed_analysis")
+    validations["no_color_pages"] = (
+        not spec.no_color_pages or not (da and (da.has_color_pages or da.has_color_text))
     )
-    validations["no_images"]        = (
-        not spec.no_images
-        or not doc_props.get("detailed_analysis", {}).images
+    validations["no_images"]      = (
+        not spec.no_images or not (da and da.images and da.images.count)
     )
-    validations["has_header"]       = (
+    validations["has_header"]     = (
         not spec.requires_header or bool(doc_props.get("headers"))
     )
-    validations["has_footnotes"]    = (
+    validations["has_footnotes"]  = (
         not spec.requires_footnotes or bool(doc_props.get("footnotes"))
     )
 
-    # ─── Min pagine ────────────────────────────────────────────────
-    validations["min_page_count"] = doc_props.get("page_count", 0) >= spec.min_page_count
-
-    # ─── Numeri pagina ─────────────────────────────────────────────
-    page_nums = doc_props.get("page_num_positions", [])
-    validations["page_numbers_position"] = page_nums and all(
-        p in ("center", "left", "right") for p in page_nums
+    # ─── Pagine minime ──────────────────────────────────────────────
+    validations["min_page_count"] = (
+        doc_props.get("page_count", 0) >= spec.min_page_count
     )
 
+    # ─── Numerazione pagine ─────────────────────────────────────────
+    page_nums = doc_props.get("page_num_positions", [])
+
+    if page_nums:
+        page_number_valid = all(p in ("center", "left", "right") for p in page_nums)
+    else:
+        # nessuna numerazione rilevata = KO (adatta a tua policy)
+        page_number_valid = False
+
+    validations["page_numbers_position"] = page_number_valid
+
+    # ─── Esito complessivo ──────────────────────────────────────────
     is_valid = all(validations.values())
     return {"validations": validations, "is_valid": is_valid}
