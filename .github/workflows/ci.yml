@@ -1,0 +1,90 @@
+# ------------------------------------------------------------
+# GitHub Actions — CI pipeline
+# ------------------------------------------------------------
+# 1. build-test  → esegue lint, type-check, test (pre-commit)
+# 2. docker      → (solo se 1 passa) build-push immagine su GHCR
+# ------------------------------------------------------------
+
+name: CI
+
+# ─── Trigger ─────────────────────────────────────────────────
+on:
+  pull_request:          # ogni commit su PR
+  push:                  # push diretto sul branch default
+    branches: [ main ]
+
+# ─────────────────────────────────────────────────────────────
+jobs:
+
+  # ==========================================================
+  # 1) Lint, type-check e test
+  # ==========================================================
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ---------- checkout repo ----------
+      - uses: actions/checkout@v4
+
+      # ---------- Python 3.11 ----------
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ---------- Installa dipendenze ----------
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # 👉 dipendenze dell’app
+          pip install -r requirements.txt
+          # 👉 tool richiamati dai pre-commit hook
+          pip install pre-commit ruff mypy pytest pytest-cov
+
+      # ---------- Esegui pre-commit (ruff, mypy, pytest) ----------
+      - name: 🚦 Run pre-commit (ruff, mypy, pytest)
+        run: pre-commit run --all-files --show-diff-on-failure
+
+  # ==========================================================
+  # 2) Build + push Docker image su GitHub Container Registry
+  #    (parte solo se build-test è verde)
+  # ==========================================================
+  docker:
+    runs-on: ubuntu-latest
+    needs: build-test          # dipendenza
+
+    # Permessi minimi per push su GHCR
+    permissions:
+      packages: write
+      contents: read
+
+    steps:
+      # ---------- checkout repo ----------
+      - uses: actions/checkout@v4
+
+      # ---------- Login a GHCR ----------
+      # Per repo pubblici basta GITHUB_TOKEN (scope packages:write già incluso)
+      - name: 🔑 Log-in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---------- Calcola il tag immagine in minuscolo ----------
+      # GHCR richiede tutto lowercase (owner compreso).
+      - name: 🏷️  Compute image tag
+        id: tag
+        run: |
+          IMAGE="ghcr.io/$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]'):latest"
+          echo "IMAGE_TAG=${IMAGE}" >> "$GITHUB_ENV"
+          echo "Computed tag: ${IMAGE}"
+
+      # ---------- Build & push con buildx ----------
+      - name: 🐳 Build & push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE_TAG }}
+          provenance: false     # opz.: riduce size immagine
