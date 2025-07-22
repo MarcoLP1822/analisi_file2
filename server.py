@@ -1,28 +1,28 @@
-# Importazioni librerie standard
+# ────────────────────────────────────────────────────────────────
+# server.py – sezione import, settings, logging, app, /metrics
+# ────────────────────────────────────────────────────────────────
+from __future__ import annotations
+
+# ========== Librerie standard ==========
 import io
 import json
 import os
 import sys
+from typing import cast
 
+# ========== Terze parti ==========
 import fitz  # PyMuPDF
-
-# Librerie per elaborazione documenti
 import requests
-from docx import Document as DocxDocument
-from fastapi import (
-    FastAPI,
-    Request,
-    status,
-)
+from docx.document import Document as DocxDocumentType
+from fastapi import APIRouter, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.staticfiles import StaticFiles
-
-# Importazioni librerie di terze parti
 from passlib.context import CryptContext
+from prometheus_fastapi_instrumentator import Instrumentator
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
@@ -30,7 +30,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table
 
-# Importazioni locali
+# ========== Import locali ==========
 from config import Settings
 from models import (
     DetailedDocumentAnalysis,
@@ -40,39 +40,37 @@ from models import (
     ReportFormat,
     ValidationResult,
 )
+from utils.logging import configure as configure_logging  # funzione creata in utils/logging.py
 
-# Inizializzazione delle impostazioni
+# ========== Impostazioni & logging ==========
 settings = Settings()
+
+# CORS – origini consentite
 origins = settings.allowed_origins_list
 
-# ──────────────────────────────────────────────────────────────
-#  CONFIGURAZIONE LOG (structlog JSON)   << sostituisce il blocco precedente
-# ──────────────────────────────────────────────────────────────
-import structlog
-
-from utils.logging import configure as configure_logging  # <— funzione creata in utils/logging.py
-
-# Inizializza structlog con il livello preso dalle settings
+# Inizializza structlog (JSON su stdout) e ottieni il logger
 configure_logging(settings.LOG_LEVEL)
+from utils.logging import get_logger
 
-# Ottieni il logger da usare nel resto del file
-log = structlog.get_logger("document_validator")
-# ──────────────────────────────────────────────────────────────
+log = get_logger("document_validator")
 
-
-# Configurazione di sicurezza
+# ========== Sicurezza baseline ==========
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# Crea l'app principale senza prefisso
+# ========== FastAPI app ==========
 app = FastAPI(
     title="Document Validator API",
     description="API for validating and analyzing documents against specifications",
     version="2.0.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json"
+    openapi_url="/api/openapi.json",
 )
+
+# ========== Prometheus /metrics ==========
+Instrumentator().instrument(app).expose(app, include_in_schema=False)
+
 
 # Funzioni di autenticazione e sicurezza
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -83,7 +81,7 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysis:
+def extract_docx_detailed_analysis(doc: DocxDocumentType) -> DetailedDocumentAnalysis:
     """
     Analisi DOCX: ora conta le occorrenze per ciascuna coppia font+size.
     """
@@ -108,7 +106,7 @@ def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysi
         # interlinea media per stile
         if paragraph._element.pPr is not None and paragraph._element.pPr.spacing is not None:
             if paragraph._element.pPr.spacing.line is not None:
-                style_name = paragraph.style.name
+                style_name = paragraph.style.name if paragraph.style else "Unknown"
                 spacing_value = paragraph._element.pPr.spacing.line / 240
                 line_spacing[style_name] = (
                     spacing_value
@@ -117,10 +115,11 @@ def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysi
                 )
 
         # struttura TOC
-        if paragraph.style.name.startswith("Heading"):
+        style_name = paragraph.style.name if paragraph.style else ""
+        if style_name.startswith("Heading"):
             lev = (
-                int(paragraph.style.name.replace("Heading", ""))
-                if paragraph.style.name != "Heading"
+                int(style_name.replace("Heading", ""))
+                if style_name != "Heading"
                 else 1
             )
             toc_structure.append({"level": str(lev), "text": paragraph.text})
@@ -130,14 +129,14 @@ def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysi
             # nome font (run -> paragrafo -> Normal)
             font_name = (
                 run.font.name
-                or paragraph.style.font.name
+                or (paragraph.style.font.name if paragraph.style and paragraph.style.font else None)
                 or default_font_name
             )
 
             # dimensione font in pt
             if run.font.size:
                 font_size = round(run.font.size.pt, 1)
-            elif paragraph.style.font.size:
+            elif paragraph.style and paragraph.style.font and paragraph.style.font.size:
                 font_size = round(paragraph.style.font.size.pt, 1)
             else:
                 font_size = round(default_font_size, 1)
@@ -584,9 +583,11 @@ def send_ticket_to_zendesk(
     return tk_res.json()["ticket"]["id"]
 
 
-from api import api_router as api_routes
+# ─── API routes ──────────────────────────────────────────────────
 
-app.include_router(api_routes)
+from api import api_router  # oggetto APIRouter definito in api.py
+
+app.include_router(cast(APIRouter, api_router))        # mypy sa che è un APIRouter
 
 # =====  FILE STATICI & FRONTEND  =====
 import pathlib

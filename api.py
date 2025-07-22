@@ -18,7 +18,6 @@ Flussi esposti (prefisso /api):
 Gli esiti di validazione vengono mantenuti in RAM tramite utils.local_store.
 """
 
-import logging
 import os
 from datetime import datetime
 
@@ -39,11 +38,13 @@ from pydantic import BaseModel, EmailStr
 from config import settings
 from models import DocumentSpec, ReportFormat, ValidationResult
 from utils.local_store import get_entry, save_result
-
-# utilità locali
+from utils.logging import get_logger
+from utils.metrics import VALIDATION_RESULT
 from utils.order_parser import parse_order
 
-logger = logging.getLogger("document_validator")
+# Logger per questo modulo
+log = get_logger("document_validator")
+
 api_router = APIRouter(prefix="/api")
 
 # ------------------------------------------------------------------ #
@@ -68,12 +69,12 @@ async def validate_with_order(
     from services.validation import validate_document
 
     try:
-        # --- 1. parse testo ordine -----------------------------------
+        # ─── 1. parse testo ordine ──────────────────────────────────
         parsed = parse_order(order_text)
         width_cm, height_cm = parsed["final_format_cm"]
         services = parsed["services"]
 
-        # --- 2. definisci la specifica “derivata” --------------------
+        # ─── 2. costruisci la DocumentSpec derivata ─────────────────
         spec = DocumentSpec(
             name="Specifica derivata dall’ordine",
             page_width_cm=width_cm,
@@ -82,10 +83,10 @@ async def validate_with_order(
             bottom_margin_cm=0,
             left_margin_cm=0,
             right_margin_cm=0,
-            min_page_count=40,   # soglia fissa demo
+            min_page_count=40,  # soglia demo
         )
 
-        # --- 3. leggi bytes e check dimensione -----------------------
+        # ─── 3. leggi file e verifica dimensione ────────────────────
         file_bytes = await file.read()
         if len(file_bytes) > settings.MAX_FILE_SIZE:
             max_mb = settings.MAX_FILE_SIZE // (1024 * 1024)
@@ -94,15 +95,19 @@ async def validate_with_order(
                 detail=f"File troppo grande: massimo {max_mb} MB.",
             )
 
-        # --- 4. estrai proprietà documento ---------------------------
+        # ─── 4. estrai proprietà (async, non blocca event-loop) ─────
+        if not file.filename:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Nome file non specificato.",
+            )
         ext = file.filename.split(".")[-1].lower()
         doc_props = await process_document_async(file_bytes, ext)
 
-
-        # --- 5. validazione dinamica ---------------------------------
+        # ─── 5. valida rispetto alla spec ───────────────────────────
         validation = validate_document(doc_props, spec, services)
 
-        # --- 6. serializza risultato e salva in memoria --------------
+        # ─── 6. serializza e salva in memoria ───────────────────────
         result = ValidationResult(
             document_name=file.filename,
             spec_id=spec.id,
@@ -114,13 +119,31 @@ async def validate_with_order(
             raw_props=jsonable_encoder(doc_props),
         )
         save_result(result, spec)
+
+        # ─── 7. metriche & log ──────────────────────────────────────
+        VALIDATION_RESULT.labels(
+            status="ok" if result.is_valid else "ko"
+        ).inc()
+
+        log.info(
+            "validate_order_completed",
+            document=result.document_name,
+            spec_id=spec.id,
+            is_valid=result.is_valid,
+        )
+
         return result
 
+    # ╭─ errori controllati ─────────────────────────────────────────╮
     except ValueError as ve:
+        log.warning("validate_order_bad_request", error=str(ve))
         raise HTTPException(status_code=400, detail=str(ve))
-    except Exception as ex:
-        logger.error(f"Errore in /validate-order: {ex}")
-        raise HTTPException(status_code=500, detail="Errore interno")
+
+    # ╰─ errori imprevisti → 500 + metrica "error" ─────────────────╯
+    except Exception as ex:  # noqa: BLE001
+        log.error("validate_order_failed", error=str(ex))
+        VALIDATION_RESULT.labels(status="error").inc()
+        raise HTTPException(status_code=500, detail="Errore interno")  # pragma: no cover
 
 
 # ------------------------------------------------------------------ #
@@ -190,7 +213,7 @@ async def zendesk_ticket(payload: ZendeskPayload):
         )
         return {"status": "ok", "ticket_id": ticket_id}
     except requests.HTTPError as e:
-        logger.error(f"Zendesk API error: {e}")
+        log.error(f"Zendesk API error: {e}")
         raise HTTPException(
             status_code=502, detail=f"Errore Zendesk {e.response.status_code}"
         )
