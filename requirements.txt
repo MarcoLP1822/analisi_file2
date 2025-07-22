@@ -25,3 +25,6 @@ reportlab
 
 # HTTP requests
 requests
+
+structlog
+prometheus-fastapi-instrumentator

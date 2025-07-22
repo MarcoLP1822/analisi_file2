@@ -1,17 +1,14 @@
 # Importazioni librerie standard
 import io
 import json
-import logging
 import os
 import sys
-from pathlib import Path
 
 import fitz  # PyMuPDF
 
 # Librerie per elaborazione documenti
 import requests
 from docx import Document as DocxDocument
-from dotenv import load_dotenv
 from fastapi import (
     FastAPI,
     Request,
@@ -46,43 +43,22 @@ from models import (
 
 # Inizializzazione delle impostazioni
 settings = Settings()
-
-# Configurazione logging
-logger = logging.getLogger("document_validator")
-
-# Configurazione sicurezza
-SECRET_KEY = settings.SECRET_KEY
-ALGORITHM = settings.ALGORITHM
-ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
-ACCESS_TOKEN_EXPIRE_DELTA = settings.access_token_expires
-
-# Configurazione CORS (origini)
 origins = settings.allowed_origins_list
 
-# Carica variabili d'ambiente e configura percorsi
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+# ──────────────────────────────────────────────────────────────
+#  CONFIGURAZIONE LOG (structlog JSON)   << sostituisce il blocco precedente
+# ──────────────────────────────────────────────────────────────
+import structlog
 
-# Configura logging basato sull'ambiente
-log_level = getattr(logging, settings.LOG_LEVEL)
+from utils.logging import configure as configure_logging  # <— funzione creata in utils/logging.py
 
-# percorso file log preso da variabile d'ambiente.
-# Vuoto o "-"  => solo console (stdout).
-LOG_PATH = os.getenv("LOG_PATH", "").strip()
+# Inizializza structlog con il livello preso dalle settings
+configure_logging(settings.LOG_LEVEL)
 
-handlers = [logging.StreamHandler(sys.stdout)]
+# Ottieni il logger da usare nel resto del file
+log = structlog.get_logger("document_validator")
+# ──────────────────────────────────────────────────────────────
 
-if LOG_PATH and LOG_PATH != "-":
-    log_file = Path(LOG_PATH)
-    log_file.parent.mkdir(parents=True, exist_ok=True)  # crea la cartella se non esiste
-    handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
-
-logging.basicConfig(
-    level=log_level,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
-    handlers=handlers,
-)
-logger = logging.getLogger("document_validator")
 
 # Configurazione di sicurezza
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -614,7 +590,6 @@ app.include_router(api_routes)
 
 # =====  FILE STATICI & FRONTEND  =====
 import pathlib
-import sys
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = pathlib.Path(sys._MEIPASS)  # cartella temporanea del bundle
@@ -650,18 +625,11 @@ if os.environ.get("ENVIRONMENT") == "production":
         TrustedHostMiddleware, allowed_hosts=["*"]  # Configura con il tuo dominio reale in produzione
     )
 
-# Configura logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
 # Gestore eccezioni per eccezioni non catturate
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     """Global exception handler for uncaught exceptions"""
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    log.error(f"Unhandled exception: {exc}", exc_info=True)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"detail": "An unexpected error occurred. Please try again later."}
