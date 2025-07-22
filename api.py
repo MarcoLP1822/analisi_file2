@@ -35,7 +35,6 @@ from fastapi import (
 )
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, EmailStr
-from starlette.concurrency import run_in_threadpool
 
 from config import settings
 from models import DocumentSpec, ReportFormat, ValidationResult
@@ -65,7 +64,8 @@ async def validate_with_order(
     file: UploadFile = File(...),
 ):
     # import locali (evita import circolari)
-    from server import process_document, validate_document
+    from services.extract import process_document_async
+    from services.validation import validate_document
 
     try:
         # --- 1. parse testo ordine -----------------------------------
@@ -96,7 +96,8 @@ async def validate_with_order(
 
         # --- 4. estrai proprietà documento ---------------------------
         ext = file.filename.split(".")[-1].lower()
-        doc_props = await run_in_threadpool(process_document, file_bytes, ext)
+        doc_props = await process_document_async(file_bytes, ext)
+
 
         # --- 5. validazione dinamica ---------------------------------
         validation = validate_document(doc_props, spec, services)

@@ -1,6 +1,6 @@
 # tests/test_validate_document.py
 from models import DocumentSpec
-from services.document import validate_document
+from services.validation import validate_document
 
 
 def test_validate_page_size_ok():
