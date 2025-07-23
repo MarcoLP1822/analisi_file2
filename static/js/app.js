@@ -1,14 +1,41 @@
 const q = id => document.getElementById(id);
 
 async function safeFetch(url, options = {}) {
+  const res = await fetch(url, options);
+
+  /* Se tutto ok, restituiamo la Response come prima */
+  if (res.ok) return res;
+
+  /* ---------- Gestione errore ---------- */
+  let message = `Errore ${res.status}`;           // base fallback
+
   try {
-    const res = await fetch(url, options);
-    if (!res.ok) throw new Error(await res.text());
-    return res;
-  } catch (err) {
-    alert(err.message);
-    throw err;
+    // FastAPI manda JSON → proviamo a leggerlo
+    const data = await res.clone().json();
+
+    if (data.detail !== undefined) {
+      // Caso 1: detail è stringa      → "{detail:'Errore interno'}"
+      if (typeof data.detail === 'string') {
+        message = data.detail;
+
+      // Caso 2: detail è array Pydantic → lista di oggetti con .msg
+      } else if (Array.isArray(data.detail)) {
+        message = data.detail
+          .map(e => e.msg || JSON.stringify(e))   // prendiamo .msg se c’è
+          .join('\n');
+      } else {
+        // Oggetto sconosciuto → serializziamo
+        message = JSON.stringify(data.detail);
+      }
+    } else {
+      message = JSON.stringify(data);
+    }
+  } catch (_) {
+    // Non era JSON: prendiamo il corpo testuale
+    message = await res.text();
   }
+
+  throw new Error(message);   // verrà catturato dai tuoi catch()
 }
 
 async function validaDocumento() {
