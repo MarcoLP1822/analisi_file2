@@ -1,38 +1,28 @@
-# Importazioni librerie standard
+# ────────────────────────────────────────────────────────────────
+# server.py – sezione import, settings, logging, app, /metrics
+# ────────────────────────────────────────────────────────────────
+from __future__ import annotations
+
+# ========== Librerie standard ==========
 import io
 import json
-import logging
 import os
 import sys
-from pathlib import Path
-from typing import Any
+from typing import cast
 
+# ========== Terze parti ==========
 import fitz  # PyMuPDF
-import pdfplumber
-
-# Librerie per elaborazione documenti
-import PyPDF2
 import requests
-from docx import Document as DocxDocument
-from dotenv import load_dotenv
-from fastapi import (
-    FastAPI,
-    HTTPException,
-    Request,
-    status,
-)
+from docx.document import Document as DocxDocumentType
+from fastapi import APIRouter, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.staticfiles import StaticFiles
-from odf.opendocument import load as load_odt
-from odf.style import PageLayoutProperties
-
-# Importazioni librerie di terze parti
-from odf.text import H as OdtHeading
 from passlib.context import CryptContext
+from prometheus_fastapi_instrumentator import Instrumentator
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
@@ -40,7 +30,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table
 
-# Importazioni locali
+# ========== Import locali ==========
 from config import Settings
 from models import (
     DetailedDocumentAnalysis,
@@ -50,60 +40,37 @@ from models import (
     ReportFormat,
     ValidationResult,
 )
+from utils.logging import configure as configure_logging  # funzione creata in utils/logging.py
 
-# Inizializzazione delle impostazioni
+# ========== Impostazioni & logging ==========
 settings = Settings()
 
-# Configurazione logging
-logger = logging.getLogger("document_validator")
-
-# Configurazione sicurezza
-SECRET_KEY = settings.SECRET_KEY
-ALGORITHM = settings.ALGORITHM
-ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
-ACCESS_TOKEN_EXPIRE_DELTA = settings.access_token_expires
-
-# Configurazione CORS (origini)
+# CORS – origini consentite
 origins = settings.allowed_origins_list
 
-# Carica variabili d'ambiente e configura percorsi
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+# Inizializza structlog (JSON su stdout) e ottieni il logger
+configure_logging(settings.LOG_LEVEL)
+from utils.logging import get_logger
 
-# Configura logging basato sull'ambiente
-log_level = getattr(logging, settings.LOG_LEVEL)
+log = get_logger("document_validator")
 
-# percorso file log preso da variabile d'ambiente.
-# Vuoto o "-"  => solo console (stdout).
-LOG_PATH = os.getenv("LOG_PATH", "").strip()
-
-handlers = [logging.StreamHandler(sys.stdout)]
-
-if LOG_PATH and LOG_PATH != "-":
-    log_file = Path(LOG_PATH)
-    log_file.parent.mkdir(parents=True, exist_ok=True)  # crea la cartella se non esiste
-    handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
-
-logging.basicConfig(
-    level=log_level,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
-    handlers=handlers,
-)
-logger = logging.getLogger("document_validator")
-
-# Configurazione di sicurezza
+# ========== Sicurezza baseline ==========
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# Crea l'app principale senza prefisso
+# ========== FastAPI app ==========
 app = FastAPI(
     title="Document Validator API",
     description="API for validating and analyzing documents against specifications",
     version="2.0.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json"
+    openapi_url="/api/openapi.json",
 )
+
+# ========== Prometheus /metrics ==========
+Instrumentator().instrument(app).expose(app, include_in_schema=False)
+
 
 # Funzioni di autenticazione e sicurezza
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -114,98 +81,7 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def extract_docx_properties(file_content: bytes) -> dict[str, Any]:
-    """Estrae proprietà da file DOCX"""
-    doc = DocxDocument(io.BytesIO(file_content))
-    # --- ESTRAZIONE HEADER ---
-    headers = []
-    for section in doc.sections:
-        header = section.header
-        if header:
-            text = "\n".join([p.text for p in header.paragraphs if p.text.strip()])
-            if text:
-                headers.append(text)
-    
-    # --- ESTRAZIONE FOOTNOTES ---
-    footnotes_texts = []
-    footnotes_part = None
-    try:
-        footnotes_part = doc.part.footnotes_part
-    except AttributeError:
-        footnotes_part = None
-    
-    if footnotes_part:
-        for footnote in footnotes_part.footnotes:
-            texts = []
-            for p in footnote.paragraphs:
-                if p.text.strip():
-                    texts.append(p.text)
-            if texts:
-                footnotes_texts.append("\n".join(texts))
-
-    # Verifica TUTTE le sezioni per inconsistenze di formato
-    section_data = []
-    inconsistent_sections = []
-    
-    for i, section in enumerate(doc.sections):
-        width_cm = section.page_width / 360000
-        height_cm = section.page_height / 360000
-        
-        section_info = {
-            'section_num': i + 1,
-            'width_cm': width_cm,
-            'height_cm': height_cm,
-            'margins': {
-                'top_cm': section.top_margin / 360000,
-                'bottom_cm': section.bottom_margin / 360000,
-                'left_cm': section.left_margin / 360000,
-                'right_cm': section.right_margin / 360000
-            }
-        }
-        section_data.append(section_info)
-    
-    # Usa la prima sezione come riferimento
-    first_section = section_data[0]
-    page_width_cm = first_section['width_cm']
-    page_height_cm = first_section['height_cm']
-    margins = first_section['margins']
-    
-    # Controlla inconsistenze tra sezioni (tolleranza di 0.1 cm)
-    for section_info in section_data[1:]:
-        if (abs(section_info['width_cm'] - page_width_cm) > 0.1 or 
-            abs(section_info['height_cm'] - page_height_cm) > 0.1):
-            inconsistent_sections.append({
-                'section': section_info['section_num'],
-                'size': f"{section_info['width_cm']:.1f}x{section_info['height_cm']:.1f}cm"
-            })
-    
-    # Controlla intestazioni (potenziale indice)
-    headings = []
-    for paragraph in doc.paragraphs:
-        if paragraph.style.name.startswith('Heading'):
-            headings.append(paragraph.text)
-    
-    has_toc = len(headings) > 0
-    
-    # Estrae analisi dettagliata
-    detailed_analysis = extract_docx_detailed_analysis(doc)
-    
-    return {
-        'page_size': {'width_cm': page_width_cm, 'height_cm': page_height_cm},
-        'margins': margins,
-        'has_toc': has_toc,
-        'headings': headings,
-        'headers': headers,
-        'footnotes': footnotes_texts,
-        'detailed_analysis': detailed_analysis,
-        # Nuove informazioni per il controllo completo
-        'all_section_data': section_data,
-        'inconsistent_sections': inconsistent_sections,
-        'has_size_inconsistencies': len(inconsistent_sections) > 0
-    }
-
-
-def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysis:
+def extract_docx_detailed_analysis(doc: DocxDocumentType) -> DetailedDocumentAnalysis:
     """
     Analisi DOCX: ora conta le occorrenze per ciascuna coppia font+size.
     """
@@ -230,7 +106,7 @@ def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysi
         # interlinea media per stile
         if paragraph._element.pPr is not None and paragraph._element.pPr.spacing is not None:
             if paragraph._element.pPr.spacing.line is not None:
-                style_name = paragraph.style.name
+                style_name = paragraph.style.name if paragraph.style else "Unknown"
                 spacing_value = paragraph._element.pPr.spacing.line / 240
                 line_spacing[style_name] = (
                     spacing_value
@@ -239,10 +115,11 @@ def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysi
                 )
 
         # struttura TOC
-        if paragraph.style.name.startswith("Heading"):
+        style_name = paragraph.style.name if paragraph.style else ""
+        if style_name.startswith("Heading"):
             lev = (
-                int(paragraph.style.name.replace("Heading", ""))
-                if paragraph.style.name != "Heading"
+                int(style_name.replace("Heading", ""))
+                if style_name != "Heading"
                 else 1
             )
             toc_structure.append({"level": str(lev), "text": paragraph.text})
@@ -252,14 +129,14 @@ def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysi
             # nome font (run -> paragrafo -> Normal)
             font_name = (
                 run.font.name
-                or paragraph.style.font.name
+                or (paragraph.style.font.name if paragraph.style and paragraph.style.font else None)
                 or default_font_name
             )
 
             # dimensione font in pt
             if run.font.size:
                 font_size = round(run.font.size.pt, 1)
-            elif paragraph.style.font.size:
+            elif paragraph.style and paragraph.style.font and paragraph.style.font.size:
                 font_size = round(paragraph.style.font.size.pt, 1)
             else:
                 font_size = round(default_font_size, 1)
@@ -321,218 +198,6 @@ def extract_docx_detailed_analysis(doc: DocxDocument) -> DetailedDocumentAnalysi
     )
 
 
-def extract_odt_properties(file_content: bytes) -> dict[str, Any]:
-    """Extract properties from ODT file"""
-    doc = load_odt(io.BytesIO(file_content))
-
-    # Estraggo headers e footers (footnotes)
-    headers = []
-    footnotes = []
-
-    # Ottiene le proprietà del layout di pagina
-    page_layouts = doc.getElementsByType(PageLayoutProperties)
-    
-    if not page_layouts:
-        return {
-            'page_size': {'width_cm': 0, 'height_cm': 0},
-            'margins': {'top_cm': 0, 'bottom_cm': 0, 'left_cm': 0, 'right_cm': 0},
-            'has_toc': False,
-            'headings': [],
-            'detailed_analysis': DetailedDocumentAnalysis()
-        }
-    
-    # Ottiene il layout della prima pagina
-    page_layout = page_layouts[0]
-    
-    # Analizza le dimensioni
-    # ODT memorizza i valori con unità, come '21cm'
-    def parse_dimension(value: str) -> float:
-        if not value:
-            return 0
-        
-        # Rimuove unità e converte a float
-        if 'cm' in value:
-            return float(value.replace('cm', ''))
-        elif 'mm' in value:
-            return float(value.replace('mm', '')) / 10  # Converte mm in cm
-        elif 'in' in value:
-            return float(value.replace('in', '')) * 2.54  # Converte pollici in cm
-        
-        return float(value)
-    
-    page_width = parse_dimension(page_layout.getAttribute('fo:page-width'))
-    page_height = parse_dimension(page_layout.getAttribute('fo:page-height'))
-    
-    margin_top = parse_dimension(page_layout.getAttribute('fo:margin-top'))
-    margin_bottom = parse_dimension(page_layout.getAttribute('fo:margin-bottom'))
-    margin_left = parse_dimension(page_layout.getAttribute('fo:margin-left'))
-    margin_right = parse_dimension(page_layout.getAttribute('fo:margin-right'))
-    
-    # Estrae intestazioni
-    headings = []
-    for heading in doc.getElementsByType(OdtHeading):
-        if heading.firstChild:
-            headings.append(heading.firstChild.data)
-    
-    has_toc = len(headings) > 0
-    
-    # Controlla immagini ed elementi colorati
-    from odf.draw import Image as OdtImage
-    from odf.style import GraphicProperties, TextProperties
-    
-    image_count = len(doc.getElementsByType(OdtImage))
-    has_color_pages = image_count > 0  # Assume che le immagini abbiano colori
-    has_color_text = False
-    colored_elements_count = image_count
-    
-    # Controlla testo colorato
-    text_props = doc.getElementsByType(TextProperties)
-    for prop in text_props:
-        color = prop.getAttribute('fo:color')
-        if color and color != '#000000':
-            has_color_text = True
-            colored_elements_count += 1
-    
-    # Controlla grafica colorata
-    graphic_props = doc.getElementsByType(GraphicProperties)
-    for prop in graphic_props:
-        fill_color = prop.getAttribute('draw:fill-color')
-        if fill_color and fill_color != '#000000':
-            has_color_pages = True
-            colored_elements_count += 1
-    
-    # Crea un'analisi dettagliata per ODT
-    detailed_analysis = DetailedDocumentAnalysis(
-        fonts={"Default": FontInfo(sizes=[11.0], count=1)},
-        paragraph_count=len(doc.getElementsByType(OdtHeading)),
-        toc_structure=[{"level": str(h.getAttribute('text:outline-level') or '1'), "text": h.firstChild.data} 
-                      for h in doc.getElementsByType(OdtHeading) if h.firstChild],
-        metadata={},
-        has_color_pages=has_color_pages,
-        has_color_text=has_color_text,
-        colored_elements_count=colored_elements_count,
-        images=ImageInfo(count=image_count, avg_size_kb=10.0) if image_count > 0 else None
-    )
-    
-    return {
-        'page_size': {'width_cm': page_width, 'height_cm': page_height},
-        'margins': {
-            'top_cm': margin_top,
-            'bottom_cm': margin_bottom,
-            'left_cm': margin_left,
-            'right_cm': margin_right
-        },
-        'has_toc': has_toc,
-        'headings': headings,
-        'headers': headers,
-        'footnotes': footnotes,
-        'detailed_analysis': detailed_analysis
-    }
-
-def extract_pdf_properties(file_content: bytes) -> dict[str, Any]:
-    """
-    Estrae le proprietà di un PDF usando la TrimBox.
-    • Verifica coerenza formato (TrimBox) fra le pagine
-    • Calcola i margini (TrimBox vs MediaBox)
-    • Rileva la posizione del numero pagina (bottom-center / bottom-left / bottom-right)
-    """
-    import io
-
-    CM_PER_PT = 0.0352778
-
-    pdf_io = io.BytesIO(file_content)
-    pdf_reader = PyPDF2.PdfReader(pdf_io)
-    if len(pdf_reader.pages) == 0:
-        raise HTTPException(status_code=400, detail="PDF file has no pages")
-
-    # ---------- helper -------------------------------------------------
-    def pick_box(page: PyPDF2._page.PageObject):
-        """Restituisce TrimBox, altrimenti CropBox, altrimenti MediaBox."""
-        for attr in ("trimbox", "cropbox", "mediabox"):
-            box = getattr(page, attr, None)
-            if box is not None:
-                return box
-        return page.mediabox  # extrema-ratio
-
-    # ---------- formato pagina & coerenza ------------------------------
-    page_boxes, inconsistent_pages = [], []
-    for idx, pg in enumerate(pdf_reader.pages):
-        box = pick_box(pg)
-        w_pt, h_pt = float(box.width), float(box.height)
-        page_boxes.append(
-            {"page": idx + 1, "width_cm": w_pt*CM_PER_PT, "height_cm": h_pt*CM_PER_PT}
-        )
-
-    ref_w, ref_h = page_boxes[0]["width_cm"], page_boxes[0]["height_cm"]
-    for pb in page_boxes[1:]:
-        if abs(pb["width_cm"]-ref_w) > .1 or abs(pb["height_cm"]-ref_h) > .1:
-            inconsistent_pages.append(pb)
-
-    # ---------- margini (TrimBox vs MediaBox) --------------------------
-    first_pg = pdf_reader.pages[0]
-    trim, media = pick_box(first_pg), first_pg.mediabox
-    margins = {
-        "top_cm":    (float(media.upper_right[1]) - float(trim.upper_right[1])) * CM_PER_PT,
-        "bottom_cm": (float(trim.lower_left[1])  - float(media.lower_left[1])) * CM_PER_PT,
-        "left_cm":   (float(trim.lower_left[0])  - float(media.lower_left[0])) * CM_PER_PT,
-        "right_cm":  (float(media.upper_right[0]) - float(trim.upper_right[0])) * CM_PER_PT,
-    }
-
-    # ---------- heading / TOC euristico + numero pagina ----------------
-    headings, headers, footnotes = [], [], []
-    page_num_positions = []  # ‘center’, ‘left’, ‘right’, ‘missing’
-
-    with pdfplumber.open(pdf_io) as pdf:
-        h_pt = pdf.pages[0].height
-        w_pt = pdf.pages[0].width
-        bottom_th = 56              # ~2 cm
-
-        for idx, p in enumerate(pdf.pages):
-            txt = (p.extract_text() or "").lower()
-            if any(k in txt for k in ("indice", "table of contents", "contents", "toc", "sommario")):
-                headings.append("TOC detected")
-
-            # header/footer veloci (prime 3 pagine)
-            if idx < 3 and txt:
-                lines = txt.splitlines()
-                headers.append(lines[0].strip())
-                footnotes.append(lines[-1].strip())
-
-            # ---- rileva numero pagina --------------------------------
-            pos = "mancante"
-            for w in p.extract_words(keep_blank_chars=False, use_text_flow=True):
-                if w["text"].strip().isdigit() and int(w["text"]) == idx+1:
-                    if w["bottom"] < h_pt - bottom_th:   # non in footer
-                        continue
-                    cx = (w["x0"] + w["x1"]) / 2
-                    if abs(cx - w_pt/2) <= w_pt*0.15:
-                        pos = "centro"
-                    elif cx < w_pt*0.25:
-                        pos = "sinistra"
-                    elif cx > w_pt*0.75:
-                        pos = "destra"
-                    break
-            page_num_positions.append(pos)
-
-    # ---------- analisi dettagliata -----------------------------------
-    detailed_analysis = extract_pdf_detailed_analysis(file_content)
-
-    return {
-        "page_size": {"width_cm": ref_w, "height_cm": ref_h},
-        "margins": margins,
-        "has_toc": bool(headings),
-        "headings": headings,
-        "headers": headers,
-        "footnotes": footnotes,
-        "detailed_analysis": detailed_analysis,
-        "page_count": len(pdf_reader.pages),
-        # nuovi campi ↓
-        "page_num_positions": page_num_positions,
-        "inconsistent_pages": inconsistent_pages,
-        "has_size_inconsistencies": bool(inconsistent_pages),
-    }
-
-
 def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalysis:
     """
     Analisi PDF:
@@ -541,7 +206,6 @@ def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalys
     • calcola il numero di *pagine* che contengono elementi a colori
       (colored_elements_count diventa pages_with_color)
     """
-    import io
 
 
     pdf_io = io.BytesIO(file_content)
@@ -644,7 +308,6 @@ def generate_validation_report(
     report_format: ReportFormat,
 ) -> bytes:
     import datetime
-    import io
     import pathlib
 
     from reportlab.platypus import (
@@ -920,13 +583,14 @@ def send_ticket_to_zendesk(
     return tk_res.json()["ticket"]["id"]
 
 
-from api import api_router as api_routes
+# ─── API routes ──────────────────────────────────────────────────
 
-app.include_router(api_routes)
+from api import api_router  # oggetto APIRouter definito in api.py
+
+app.include_router(cast(APIRouter, api_router))        # mypy sa che è un APIRouter
 
 # =====  FILE STATICI & FRONTEND  =====
 import pathlib
-import sys
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = pathlib.Path(sys._MEIPASS)  # cartella temporanea del bundle
@@ -962,18 +626,11 @@ if os.environ.get("ENVIRONMENT") == "production":
         TrustedHostMiddleware, allowed_hosts=["*"]  # Configura con il tuo dominio reale in produzione
     )
 
-# Configura logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
 # Gestore eccezioni per eccezioni non catturate
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     """Global exception handler for uncaught exceptions"""
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    log.error(f"Unhandled exception: {exc}", exc_info=True)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"detail": "An unexpected error occurred. Please try again later."}
