@@ -143,86 +143,104 @@ def extract_pdf_properties(file_content: bytes) -> dict[str, Any]:
 # ------------------------------------------------------------------ #
 def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalysis:
     """
-    Raccoglie info su:
-    • font (con occorrenze per size)
-    • immagini (conteggio + peso medio)
-    • colore (pagine con colore, testo colorato)
-    • TOC, paragrafi, metadati
+    Analisi PDF:
+    • raccoglie font, paragrafi, TOC, metadati
+    • rileva immagini e testo colorato
+    • calcola il numero di *pagine* che contengono elementi a colori
+      (colored_elements_count diventa pages_with_color)
     """
+
+
     pdf_io = io.BytesIO(file_content)
-    doc = fitz.open(stream=pdf_io, filetype="pdf")
+    pdf_doc = fitz.open(stream=pdf_io, filetype="pdf")
 
     fonts: dict[str, FontInfo] = {}
     toc_structure: list[dict[str, str]] = []
     paragraph_count = 0
     image_count = 0
     total_image_size = 0
+
     color_pages: set[int] = set()
     has_color_text = False
 
-    # ---- metadati --------------------------------------------------
-    metadata = {
-        k: str(v)
-        for k, v in doc.metadata.items()
-        if v and k not in ("format", "encryption")
-    }
+    # -------- metadati ------------------------------------------------
+    metadata = {k: str(v) for k, v in pdf_doc.metadata.items() if v and k not in ("format", "encryption")}
 
-    # ---- pagine ----------------------------------------------------
-    for page_num, page in enumerate(doc):
+    # -------- scorre pagine ------------------------------------------
+    for page_num, page in enumerate(pdf_doc):
+        # paragrafi approssimati
         paragraph_count += len(page.get_text("blocks"))
 
-        page_is_color = False
+        page_is_color = False  # flag locale
 
         # immagini
         for img in page.get_images(full=True):
             xref = img[0]
             try:
-                base = doc.extract_image(xref)
-                if base:
+                base_image = pdf_doc.extract_image(xref)
+                if base_image:
                     image_count += 1
-                    total_image_size += len(base["image"])
+                    total_image_size += len(base_image["image"])
                     page_is_color = True
             except Exception:
-                pass  # ignore extract errors
+                pass
 
-        # sample pixel grigi / colore
+        # pixel color check (fallback a bassa risoluzione)
         if not page_is_color:
-            pix = page.get_pixmap(samples=8, colorspace=fitz.csRGB)
-            for px in pix.samples:
-                if px[0] != px[1] or px[1] != px[2]:
-                    page_is_color = True
-                    break
+            # Render molto piccolo (scala 0.1) per ridurre i byte
+            try:
+                pix = page.get_pixmap(matrix=fitz.Matrix(0.1, 0.1), colorspace=fitz.csRGB)
+            except TypeError:
+                # vecchie versioni non hanno colorspace: usiamo default
+                pix = page.get_pixmap(matrix=fitz.Matrix(0.1, 0.1))
 
-        # font & colore testo
-        for blk in page.get_text("dict")["blocks"]:
-            for ln in blk.get("lines", []):
-                for sp in ln.get("spans", []):
-                    fname = sp["font"]
-                    fsize = round(float(sp["size"]), 1)
+            # pix.samples è un buffer di byte: RGBRGBRGB...
+            step = pix.n  # numero di canali (3 se RGB)
+            data = pix.samples  # type: ignore[arg-type]
 
-                    fi = fonts.setdefault(fname, FontInfo(sizes=[], count=0, size_counts={}))
+            for i in range(0, len(data), step):
+                # se è RGB, confronta i 3 canali
+                if step >= 3:
+                    r, g, b = data[i], data[i + 1], data[i + 2]
+                    if not (r == g == b):
+                        page_is_color = True
+                        break
+
+        # font & testo colorato
+        for span in page.get_text("dict")["blocks"]:
+            for l in span.get("lines", []):
+                for s in l.get("spans", []):
+                    font_name = s["font"]
+                    font_size = round(float(s["size"]), 1)
+
+                    # aggiorna font dict
+                    fi = fonts.setdefault(font_name, FontInfo(sizes=[], count=0, size_counts={}))
                     fi.count += 1
-                    if fsize not in fi.sizes:
-                        fi.sizes.append(fsize)
-                    fi.size_counts[fsize] = fi.size_counts.get(fsize, 0) + 1
+                    if font_size not in fi.sizes:
+                        fi.sizes.append(font_size)
+                    fi.size_counts[font_size] = fi.size_counts.get(font_size, 0) + 1
 
-                    if sp["color"] not in (0, 0x000000):
+                    # colore RGB
+                    if s["color"] not in (0, 0x000000):
                         has_color_text = True
                         page_is_color = True
 
         if page_is_color:
             color_pages.add(page_num)
 
-    # ---- TOC -------------------------------------------------------
-    toc = doc.get_toc()
-    for lvl, title, _ in toc or []:
-        toc_structure.append({"level": str(lvl), "text": title})
+    # -------- TOC -----------------------------------------------------
+    toc = pdf_doc.get_toc()
+    if toc:
+        for level, title, _ in toc:
+            toc_structure.append({"level": str(level), "text": title})
 
-    image_info = (
-        ImageInfo(count=image_count, avg_size_kb=round((total_image_size / image_count) / 1024, 2))
-        if image_count
-        else None
-    )
+    # -------- immagini info ------------------------------------------
+    image_info = None
+    if image_count:
+        image_info = ImageInfo(
+            count=image_count,
+            avg_size_kb=round((total_image_size / image_count) / 1024, 2),
+        )
 
     return DetailedDocumentAnalysis(
         fonts=fonts,
@@ -233,5 +251,5 @@ def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalys
         metadata=metadata,
         has_color_pages=bool(color_pages),
         has_color_text=has_color_text,
-        colored_elements_count=len(color_pages),
+        colored_elements_count=len(color_pages),  # = pagine con colore
     )

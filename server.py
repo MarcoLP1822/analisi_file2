@@ -11,9 +11,7 @@ import sys
 from typing import cast
 
 # ========== Terze parti ==========
-import fitz  # PyMuPDF
 import requests
-from docx.document import Document as DocxDocumentType
 from fastapi import APIRouter, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -22,7 +20,11 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.staticfiles import StaticFiles
 from passlib.context import CryptContext
-from prometheus_fastapi_instrumentator import Instrumentator
+
+try:
+    from prometheus_fastapi_instrumentator import Instrumentator
+except ImportError:
+    Instrumentator = None  # type: ignore[assignment]
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
@@ -33,10 +35,7 @@ from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Tabl
 # ========== Import locali ==========
 from config import Settings
 from models import (
-    DetailedDocumentAnalysis,
     DocumentSpec,
-    FontInfo,
-    ImageInfo,
     ReportFormat,
     ValidationResult,
 )
@@ -69,9 +68,9 @@ app = FastAPI(
 )
 
 # ========== Prometheus /metrics ==========
-Instrumentator().instrument(app).expose(app, include_in_schema=False)
-
-
+if Instrumentator:
+    Instrumentator().instrument(app).expose(app, include_in_schema=False)
+    
 # Funzioni di autenticazione e sicurezza
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
@@ -80,224 +79,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
-
-def extract_docx_detailed_analysis(doc: DocxDocumentType) -> DetailedDocumentAnalysis:
-    """
-    Analisi DOCX: ora conta le occorrenze per ciascuna coppia font+size.
-    """
-    fonts: dict[str, FontInfo] = {}
-    paragraph_count = 0
-    line_spacing: dict[str, float] = {}
-    toc_structure: list[dict[str, str]] = []
-    has_color_text = False
-    colored_elements_count = 0
-
-    # fallback: font e dimensione di default dallo stile "Normal"
-    default_font_name = doc.styles["Normal"].font.name or "Default"
-    default_font_size = (
-        doc.styles["Normal"].font.size.pt
-        if doc.styles["Normal"].font.size
-        else 11.0
-    )
-
-    for paragraph in doc.paragraphs:
-        paragraph_count += 1
-
-        # interlinea media per stile
-        if paragraph._element.pPr is not None and paragraph._element.pPr.spacing is not None:
-            if paragraph._element.pPr.spacing.line is not None:
-                style_name = paragraph.style.name if paragraph.style else "Unknown"
-                spacing_value = paragraph._element.pPr.spacing.line / 240
-                line_spacing[style_name] = (
-                    spacing_value
-                    if style_name not in line_spacing
-                    else (line_spacing[style_name] + spacing_value) / 2
-                )
-
-        # struttura TOC
-        style_name = paragraph.style.name if paragraph.style else ""
-        if style_name.startswith("Heading"):
-            lev = (
-                int(style_name.replace("Heading", ""))
-                if style_name != "Heading"
-                else 1
-            )
-            toc_structure.append({"level": str(lev), "text": paragraph.text})
-
-        # ---------- scan run ----------
-        for run in paragraph.runs:
-            # nome font (run -> paragrafo -> Normal)
-            font_name = (
-                run.font.name
-                or (paragraph.style.font.name if paragraph.style and paragraph.style.font else None)
-                or default_font_name
-            )
-
-            # dimensione font in pt
-            if run.font.size:
-                font_size = round(run.font.size.pt, 1)
-            elif paragraph.style and paragraph.style.font and paragraph.style.font.size:
-                font_size = round(paragraph.style.font.size.pt, 1)
-            else:
-                font_size = round(default_font_size, 1)
-
-            # colore?
-            if run.font.color and run.font.color.rgb and run.font.color.rgb != "000000":
-                has_color_text = True
-                colored_elements_count += 1
-
-            # aggiorna dizionario caratteri
-            fi = fonts.get(font_name)
-            if not fi:
-                fi = FontInfo(sizes=[font_size], count=0, size_counts={})
-                fonts[font_name] = fi
-
-            fi.count += 1
-            if font_size not in fi.sizes:
-                fi.sizes.append(font_size)
-            fi.size_counts[font_size] = fi.size_counts.get(font_size, 0) + 1
-
-    # immagini
-    image_count = 0
-    total_image_size = 0
-    has_color_pages = False
-    for rel in doc.part.rels.values():
-        if rel.target_ref.startswith("media/"):
-            image_count += 1
-            if hasattr(rel.target_part, "blob"):
-                total_image_size += len(rel.target_part.blob)
-            has_color_pages = True
-            colored_elements_count += 1
-
-    image_info = None
-    if image_count:
-        image_info = ImageInfo(
-            count=image_count,
-            avg_size_kb=round((total_image_size / image_count) / 1024, 2),
-        )
-
-    # metadati
-    metadata = {}
-    cp = doc.core_properties
-    if cp:
-        if cp.author: metadata["author"] = cp.author
-        if cp.title:  metadata["title"]  = cp.title
-        if cp.created:  metadata["created"]  = cp.created.isoformat()
-        if cp.modified: metadata["modified"] = cp.modified.isoformat()
-
-    return DetailedDocumentAnalysis(
-        fonts=fonts,
-        images=image_info,
-        line_spacing=line_spacing,
-        paragraph_count=paragraph_count,
-        toc_structure=toc_structure,
-        metadata=metadata,
-        has_color_pages=has_color_pages,
-        has_color_text=has_color_text,
-        colored_elements_count=colored_elements_count,
-    )
-
-
-def extract_pdf_detailed_analysis(file_content: bytes) -> DetailedDocumentAnalysis:
-    """
-    Analisi PDF:
-    • raccoglie font, paragrafi, TOC, metadati
-    • rileva immagini e testo colorato
-    • calcola il numero di *pagine* che contengono elementi a colori
-      (colored_elements_count diventa pages_with_color)
-    """
-
-
-    pdf_io = io.BytesIO(file_content)
-    pdf_doc = fitz.open(stream=pdf_io, filetype="pdf")
-
-    fonts: dict[str, FontInfo] = {}
-    toc_structure: list[dict[str, str]] = []
-    paragraph_count = 0
-    image_count = 0
-    total_image_size = 0
-
-    color_pages: set[int] = set()
-    has_color_text = False
-
-    # -------- metadati ------------------------------------------------
-    metadata = {k: str(v) for k, v in pdf_doc.metadata.items() if v and k not in ("format", "encryption")}
-
-    # -------- scorre pagine ------------------------------------------
-    for page_num, page in enumerate(pdf_doc):
-        # paragrafi approssimati
-        paragraph_count += len(page.get_text("blocks"))
-
-        page_is_color = False  # flag locale
-
-        # immagini
-        for img in page.get_images(full=True):
-            xref = img[0]
-            try:
-                base_image = pdf_doc.extract_image(xref)
-                if base_image:
-                    image_count += 1
-                    total_image_size += len(base_image["image"])
-                    page_is_color = True
-            except Exception:
-                pass
-
-        # pixel color check (mini-campionamento)
-        if not page_is_color:
-            pix = page.get_pixmap(samples=8, colorspace=fitz.csRGB)
-            for px in pix.samples:
-                r, g, b = px[0], px[1], px[2]
-                if r != g or g != b:  # non scala di grigi
-                    page_is_color = True
-                    break
-
-        # font & testo colorato
-        for span in page.get_text("dict")["blocks"]:
-            for l in span.get("lines", []):
-                for s in l.get("spans", []):
-                    font_name = s["font"]
-                    font_size = round(float(s["size"]), 1)
-
-                    # aggiorna font dict
-                    fi = fonts.setdefault(font_name, FontInfo(sizes=[], count=0, size_counts={}))
-                    fi.count += 1
-                    if font_size not in fi.sizes:
-                        fi.sizes.append(font_size)
-                    fi.size_counts[font_size] = fi.size_counts.get(font_size, 0) + 1
-
-                    # colore RGB
-                    if s["color"] not in (0, 0x000000):
-                        has_color_text = True
-                        page_is_color = True
-
-        if page_is_color:
-            color_pages.add(page_num)
-
-    # -------- TOC -----------------------------------------------------
-    toc = pdf_doc.get_toc()
-    if toc:
-        for level, title, _ in toc:
-            toc_structure.append({"level": str(level), "text": title})
-
-    # -------- immagini info ------------------------------------------
-    image_info = None
-    if image_count:
-        image_info = ImageInfo(
-            count=image_count,
-            avg_size_kb=round((total_image_size / image_count) / 1024, 2),
-        )
-
-    return DetailedDocumentAnalysis(
-        fonts=fonts,
-        images=image_info,
-        line_spacing={"Default": 1.2},
-        paragraph_count=paragraph_count,
-        toc_structure=toc_structure,
-        metadata=metadata,
-        has_color_pages=bool(color_pages),
-        has_color_text=has_color_text,
-        colored_elements_count=len(color_pages),  # = pagine con colore
-    )
 
 # ──────────────────────────────────────────────────────────────────
 #  GENERATE PDF – versione “client-friendly”
